@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -17,6 +19,21 @@ android {
         versionName = "1.0"
     }
 
+    // ═══ 签名配置（从 local.properties 安全读取）═══
+    signingConfigs {
+        create("release") {
+            val props = Properties()
+            val localPropsFile = rootProject.file("local.properties")
+            if (localPropsFile.exists()) {
+                props.load(localPropsFile.inputStream())
+            }
+            storeFile = file(props.getProperty("KEY_STORE_PATH", "smartledger.jks"))
+            storePassword = props.getProperty("KEY_STORE_PASSWORD", "")
+            keyAlias = props.getProperty("KEY_ALIAS", "smartledger")
+            keyPassword = props.getProperty("KEY_PASSWORD", "")
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -24,49 +41,52 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("release")
         }
     }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
     kotlinOptions {
         jvmTarget = "17"
     }
+
     buildFeatures {
         compose = true
     }
 }
 
 dependencies {
+    // Compose BOM
+    val composeBom = platform(libs.androidx.compose.bom)
+    implementation(composeBom)
+
+    // Core
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
-    implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
 
     // Compose
-    implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons)
-    debugImplementation(libs.androidx.compose.ui.tooling)
 
     // Navigation
     implementation(libs.androidx.navigation.compose)
+
+    // ViewModel
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
 
     // Room
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
 
-    // Lottie - Animations
-    implementation(libs.lottie.compose)
-
-    // Accompanist - System UI
-    implementation(libs.accompanist.systemuicontroller)
-
-    // Coil - Image Loading
-    implementation(libs.coil.compose)
+    // Debug
+    debugImplementation(libs.androidx.compose.ui.tooling)
 }
