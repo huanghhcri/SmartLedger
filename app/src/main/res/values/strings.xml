@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">智能记账</string>
+    <string name="tab_home">首页</string>
+    <string name="tab_record">记账</string>
+    <string name="tab_statistics">统计</string>
+    <string name="tab_budget">规划</string>
+    <string name="expense">支出</string>
+    <string name="income">收入</string>
+    <string name="save">保存</string>
+    <string name="cancel">取消</string>
+    <string name="confirm">确认</string>
+    <string name="ignore">忽略</string>
+    <string name="edit">修改</string>
+    <string name="amount_hint">输入金额</string>
+    <string name="note_hint">添加备注...</string>
+    <string name="monthly_expense">本月支出</string>
+    <string name="monthly_income">本月收入</string>
+    <string name="monthly_balance">本月结余</string>
+    <string name="today_expense">今日支出</string>
+    <string name="no_records">暂无记录</string>
+    <string name="payment_detected">检测到支付</string>
+    <string name="record_this">记这笔</string>
+    <string name="permission_required">需要以下权限</string>
+    <string name="grant_permission">授予权限</string>
+</resources>
