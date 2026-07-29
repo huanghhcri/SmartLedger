@@ -28,19 +28,26 @@ class PaymentNotificationListener : NotificationListenerService() {
         private val MONITORED_PACKAGES = setOf(
             "com.tencent.mm",           // 微信
             "com.eg.android.AlipayGphone", // 支付宝
-            "com.unionpay"              // 云闪付
+            "com.unionpay",             // 云闪付
+            "com.ss.android.ugc.aweme", // 抖音
+            "com.ss.android.ugc.live"   // 抖音极速版
         )
 
         // ═══ 银行类 App ═══
         private val BANK_PACKAGES = setOf(
             "com.icbc",                 // 工商银行
             "com.icbc.im",              // 工商银行(融e联)
+            "com.icbc.icbcmb",          // 工商银行(手机银行)
             "com.chinapost.pbs",        // 邮政储蓄银行
             "com.psbc",                 // 邮政储蓄银行(新)
             "com.ccb.start",            // 建设银行
+            "com.ccb.main",             // 建设银行(新)
             "com.chinamworld.bocmbci",  // 中国银行
+            "com.boc.bocsoft.bocmbs",   // 中国银行(新)
             "com.abchina.abcpocket",    // 农业银行
+            "com.android.bankabc",      // 农业银行(新)
             "cmb.pb",                   // 招商银行
+            "cmb.b2c",                  // 招商银行(新)
             "com.chinamworld.main",     // 中信银行
             "com.pingan.paces.ccms",    // 平安银行
             "com.spdb.mobilebank",      // 浦发银行
@@ -102,17 +109,27 @@ class PaymentNotificationListener : NotificationListenerService() {
         // 如果不是监控的App，但包含银行关键词，也处理
         val isBankRelated = text.contains("银行") || text.contains("工商") || text.contains("邮政") ||
                 text.contains("工行") || text.contains("邮储") || text.contains("建设") ||
-                text.contains("中国银行") || text.contains("农业") || text.contains("招商")
+                text.contains("中国银行") || text.contains("农业") || text.contains("招商") ||
+                text.contains("动账通知") || text.contains("交易提醒")
+
+        Log.d(TAG, "isMonitoredApp=$isMonitoredApp, isBankRelated=$isBankRelated")
 
         // 对于监控的App，即使没有明确关键词，只要有金额也尝试解析
         val hasAmount = text.contains("元") || text.contains("￥") || text.contains("¥")
 
         if (!hasExpenseKeyword && !hasIncomeKeyword) {
+            Log.d(TAG, "No keywords found, checking if monitored app with amount...")
             // 没有关键词，只有监控的App且有金额才继续
-            if (!(isMonitoredApp && hasAmount)) return
+            if (!(isMonitoredApp && hasAmount)) {
+                Log.d(TAG, "Not monitored app or no amount, skipping")
+                return
+            }
         }
 
-        if (!isMonitoredApp && !isBankRelated) return
+        if (!isMonitoredApp && !isBankRelated) {
+            Log.d(TAG, "Not monitored app and not bank related, skipping")
+            return
+        }
 
         val parsed = NotificationParser.parse(title, content, packageName)
         if (parsed == null) {
