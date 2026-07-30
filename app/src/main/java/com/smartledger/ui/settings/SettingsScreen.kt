@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,6 +43,12 @@ fun SettingsScreen(
     var debugToastsEnabled by remember {
         mutableStateOf(prefs.getBoolean("debug_toasts", false))
     }
+
+    // 检查更新状态
+    var isCheckingUpdate by remember { mutableStateOf(false) }
+    var updateResult by remember { mutableStateOf<com.smartledger.util.UpdateChecker.UpdateInfo?>(null) }
+    var showNoUpdate by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
 
     Box(modifier = Modifier.fillMaxSize().background(SmartLedgerColors.bg)) {
         LazyColumn(
@@ -243,6 +250,26 @@ fun SettingsScreen(
                         )
                         DividerLine()
                         MenuSettingItem(
+                            icon = Icons.Outlined.Refresh,
+                            label = "检查更新",
+                            subtitle = if (isCheckingUpdate) "检查中..." else null,
+                            onClick = {
+                                if (!isCheckingUpdate) {
+                                    isCheckingUpdate = true
+                                    coroutineScope.launch {
+                                        val info = com.smartledger.util.UpdateChecker.checkForUpdate(context)
+                                        isCheckingUpdate = false
+                                        if (info != null) {
+                                            updateResult = info
+                                        } else {
+                                            showNoUpdate = true
+                                        }
+                                    }
+                                }
+                            }
+                        )
+                        DividerLine()
+                        MenuSettingItem(
                             icon = Icons.Outlined.Info,
                             label = "版本号",
                             subtitle = "v1.0.2",
@@ -252,6 +279,34 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+
+    // ═══ 检查更新结果弹窗 ═══
+    updateResult?.let { info ->
+        com.smartledger.ui.components.SmartLedgerDialog(
+            onDismissRequest = { updateResult = null },
+            iconTint = SmartLedgerColors.accent,
+            title = "发现新版本 ${info.versionName}",
+            text = if (info.releaseNotes.isNotBlank()) info.releaseNotes.take(300) else "有新版本可用，建议更新。",
+            confirmText = "立即更新",
+            onConfirm = {
+                com.smartledger.util.UpdateChecker.openDownloadPage(context, info)
+                updateResult = null
+            },
+            dismissText = "稍后再说",
+            onDismiss = { updateResult = null }
+        )
+    }
+
+    if (showNoUpdate) {
+        com.smartledger.ui.components.SmartLedgerDialog(
+            onDismissRequest = { showNoUpdate = false },
+            iconTint = SmartLedgerColors.income,
+            title = "已是最新版本",
+            text = "当前版本 v1.0.2 已是最新，无需更新。",
+            confirmText = "好的",
+            onConfirm = { showNoUpdate = false }
+        )
     }
 }
 

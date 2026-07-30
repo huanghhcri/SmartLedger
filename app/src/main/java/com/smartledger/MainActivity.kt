@@ -142,6 +142,21 @@ fun MainApp() {
         }
     }
 
+    // ═══ 自动检查更新（每天最多一次）═══
+    var updateInfo by remember { mutableStateOf<com.smartledger.util.UpdateChecker.UpdateInfo?>(null) }
+    LaunchedEffect(Unit) {
+        val prefs = context.getSharedPreferences("smart_ledger", Context.MODE_PRIVATE)
+        val lastCheck = prefs.getLong("last_update_check", 0)
+        val now = System.currentTimeMillis()
+        if (now - lastCheck > 24 * 60 * 60 * 1000L) {
+            val info = com.smartledger.util.UpdateChecker.checkForUpdate(context)
+            if (info != null) {
+                updateInfo = info
+            }
+            prefs.edit().putLong("last_update_check", now).apply()
+        }
+    }
+
     // 通知深链：读取 openTransactionId
     val activity = context as? ComponentActivity
     val openTransactionId = activity?.intent?.getLongExtra("openTransactionId", -1) ?: -1
@@ -359,6 +374,23 @@ fun MainApp() {
             },
             dismissText = "稍后再说",
             onDismiss = { showPermissionWarning = false }
+        )
+    }
+
+    // ═══ 检查更新弹窗 ═══
+    updateInfo?.let { info ->
+        SmartLedgerDialog(
+            onDismissRequest = { updateInfo = null },
+            iconTint = SmartLedgerColors.accent,
+            title = "发现新版本 ${info.versionName}",
+            text = if (info.releaseNotes.isNotBlank()) info.releaseNotes.take(200) else "有新版本可用，建议更新。",
+            confirmText = "立即更新",
+            onConfirm = {
+                com.smartledger.util.UpdateChecker.openDownloadPage(context, info)
+                updateInfo = null
+            },
+            dismissText = "稍后再说",
+            onDismiss = { updateInfo = null }
         )
     }
 
