@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -24,6 +25,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.smartledger.SmartLedgerApp
 import com.smartledger.data.db.entity.Category
+import com.smartledger.ui.components.SmartLedgerDialog
+import com.smartledger.ui.components.SmartLedgerInputDialog
 import com.smartledger.ui.theme.SmartLedgerColors
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
@@ -137,7 +140,7 @@ fun CategoryManageScreen(
                         .fillMaxWidth()
                         .padding(horizontal = 20.dp)
                 ) {
-                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(20.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("添加分类")
                 }
@@ -237,18 +240,14 @@ private fun CategoryItem(
     }
 
     if (showDeleteConfirm) {
-        AlertDialog(
+        SmartLedgerDialog(
             onDismissRequest = { showDeleteConfirm = false },
-            title = { Text("删除分类") },
-            text = { Text("确定要删除「${category.name}」吗？") },
-            confirmButton = {
-                TextButton(onClick = { onDelete(); showDeleteConfirm = false }) {
-                    Text("删除", color = SmartLedgerColors.expense)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirm = false }) { Text("取消") }
-            }
+            title = "删除分类",
+            text = "确定要删除「${category.name}」吗？",
+            confirmText = "删除",
+            confirmColor = SmartLedgerColors.expense,
+            onConfirm = { onDelete(); showDeleteConfirm = false },
+            dismissText = "取消"
         )
     }
 }
@@ -265,17 +264,28 @@ private fun AddCategoryDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("添加${if (type == "expense") "支出" else "收入"}分类") },
+        shape = RoundedCornerShape(20.dp),
+        containerColor = SmartLedgerColors.surface,
+        titleContentColor = SmartLedgerColors.fg,
+        title = {
+            Text("添加${if (type == "expense") "支出" else "收入"}分类", fontWeight = FontWeight.Bold)
+        },
         text = {
             Column {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
                     label = { Text("分类名称") },
-                    singleLine = true
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = SmartLedgerColors.accent,
+                        focusedLabelColor = SmartLedgerColors.accent,
+                        cursorColor = SmartLedgerColors.accent
+                    )
                 )
                 Spacer(modifier = Modifier.height(16.dp))
-                Text("选择颜色", style = MaterialTheme.typography.labelMedium)
+                Text("选择颜色", style = MaterialTheme.typography.labelMedium, color = SmartLedgerColors.fgSecondary)
                 Spacer(modifier = Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     colors.forEach { color ->
@@ -295,12 +305,16 @@ private fun AddCategoryDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                if (name.isNotBlank()) onAdd(name, selectedColor)
-            }) { Text("添加") }
+            Button(
+                onClick = {
+                    if (name.isNotBlank()) onAdd(name, selectedColor)
+                },
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = SmartLedgerColors.accent)
+            ) { Text("添加", fontWeight = FontWeight.SemiBold) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            TextButton(onClick = onDismiss) { Text("取消", color = SmartLedgerColors.fgSecondary) }
         }
     )
 }
@@ -313,24 +327,15 @@ private fun EditCategoryDialog(
 ) {
     var name by remember { mutableStateOf(category.name) }
 
-    AlertDialog(
+    SmartLedgerInputDialog(
         onDismissRequest = onDismiss,
-        title = { Text("编辑分类") },
-        text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                label = { Text("分类名称") },
-                singleLine = true
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                if (name.isNotBlank()) onSave(category.copy(name = name))
-            }) { Text("保存") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+        title = "编辑分类",
+        label = "分类名称",
+        value = name,
+        onValueChange = { name = it },
+        confirmText = "保存",
+        onConfirm = {
+            if (name.isNotBlank()) onSave(category.copy(name = name))
         }
     )
 }

@@ -354,7 +354,7 @@ private fun FloatingPaymentDialog(
                     modifier = Modifier.weight(1.5f),
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text("⚠", modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("记这笔", fontWeight = FontWeight.Bold)
                 }

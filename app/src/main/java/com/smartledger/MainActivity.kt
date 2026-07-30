@@ -25,6 +25,7 @@ import androidx.navigation.compose.rememberNavController
 import com.smartledger.ui.home.HomeScreen
 import com.smartledger.ui.home.SearchScreen
 import com.smartledger.ui.home.SearchViewModel
+import com.smartledger.ui.components.SmartLedgerDialog
 import com.smartledger.ui.navigation.Screen
 import com.smartledger.ui.navigation.bottomNavItems
 import com.smartledger.ui.profile.ProfileScreen
@@ -32,13 +33,28 @@ import com.smartledger.ui.record.RecordScreen
 import com.smartledger.ui.statistics.StatisticsScreen
 import com.smartledger.ui.theme.SmartLedgerColors
 import com.smartledger.ui.theme.SmartLedgerTheme
+import com.smartledger.ui.theme.ThemeManager
+import com.smartledger.ui.theme.ThemeMode
 import com.smartledger.util.CsvExporter
+import android.widget.Toast
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // 初始化主题模式
+        val prefs = getSharedPreferences("smart_ledger", MODE_PRIVATE)
+        val savedTheme = prefs.getString("theme_mode", "SYSTEM")
+        ThemeManager.init(ThemeMode.valueOf(savedTheme ?: "SYSTEM"))
+
+        // 注册自动备份（如果已开启）
+        val autoBackupEnabled = prefs.getBoolean("auto_backup", true)
+        if (autoBackupEnabled) {
+            com.smartledger.util.AutoBackupScheduler.schedule(this)
+        }
+
         setContent {
             SmartLedgerTheme {
                 MainApp()
@@ -62,6 +78,37 @@ fun MainApp() {
             context.getSharedPreferences("smart_ledger", Context.MODE_PRIVATE)
                 .getBoolean("first_launch", true)
         )
+    }
+
+    // 重装恢复检测：首次启动 + 有备份文件 + 数据库为空
+    var showRestoreDialog by remember { mutableStateOf(false) }
+    var backupFileToRestore by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(isFirstLaunch) {
+        if (isFirstLaunch) {
+            val prefs = context.getSharedPreferences("smart_ledger", Context.MODE_PRIVATE)
+            val hasShownRestore = prefs.getBoolean("has_shown_restore_prompt", false)
+            if (!hasShownRestore) {
+                // 检查是否有备份文件
+                val backupDir = java.io.File(
+                    android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOCUMENTS),
+                    "SmartLedger"
+                )
+                val backupFiles = backupDir.listFiles()?.filter {
+                    it.name.endsWith(".csv") && it.name.startsWith("SmartLedger")
+                }?.sortedByDescending { it.lastModified() }
+
+                if (!backupFiles.isNullOrEmpty()) {
+                    // 检查数据库是否为空（重装后数据库是空的）
+                    val db = com.smartledger.data.db.AppDatabase.getInstance(context)
+                    val count = db.transactionDao().getCount()
+                    if (count == 0) {
+                        backupFileToRestore = backupFiles.first().name
+                        showRestoreDialog = true
+                    }
+                }
+                prefs.edit().putBoolean("has_shown_restore_prompt", true).apply()
+            }
+        }
     }
 
     // 权限状态（每次 resume 时刷新）
@@ -90,6 +137,20 @@ fun MainApp() {
     LaunchedEffect(isFirstLaunch) {
         if (isFirstLaunch && (!notificationListenerEnabled || !canDrawOverlays)) {
             navController.navigate("permission") {
+                popUpTo(Screen.Home.route) { inclusive = true }
+            }
+        }
+    }
+
+    // 通知深链：读取 openTransactionId
+    val activity = context as? ComponentActivity
+    val openTransactionId = activity?.intent?.getLongExtra("openTransactionId", -1) ?: -1
+    LaunchedEffect(openTransactionId) {
+        if (openTransactionId > 0) {
+            // 清除 extra 避免重复触发
+            activity?.intent?.removeExtra("openTransactionId")
+            // 导航到首页（交易记录在首页可见）
+            navController.navigate(Screen.Home.route) {
                 popUpTo(Screen.Home.route) { inclusive = true }
             }
         }
@@ -217,6 +278,18 @@ fun MainApp() {
             }
             composable("settings") {
                 com.smartledger.ui.settings.SettingsScreen(
+                    onBack = { navController.popBackStack() },
+                    onNavigateToFeedback = { navController.navigate("feedback") },
+                    onNavigateToPrivacy = { navController.navigate("privacy") }
+                )
+            }
+            composable("feedback") {
+                com.smartledger.ui.settings.FeedbackScreen(
+                    onBack = { navController.popBackStack() }
+                )
+            }
+            composable("privacy") {
+                com.smartledger.ui.settings.PrivacyPolicyScreen(
                     onBack = { navController.popBackStack() }
                 )
             }
@@ -246,58 +319,75 @@ fun MainApp() {
 
     // CSV导出成功弹窗
     if (showExportDialog && exportResult != null) {
-        AlertDialog(
+        SmartLedgerDialog(
             onDismissRequest = { showExportDialog = false },
-            title = { Text("导出成功") },
-            text = { Text("记账数据已导出到 Documents/SmartLedger/ 目录") },
-            confirmButton = {
-                TextButton(onClick = {
-                    exportResult?.let { CsvExporter.shareFile(context, it) }
-                    showExportDialog = false
-                }) {
-                    Text("分享")
+            iconTint = SmartLedgerColors.income,
+            title = "导出成功",
+            text = "记账数据已导出到 Documents/SmartLedger/ 目录",
+            confirmText = "打开文件",
+            onConfirm = {
+                exportResult?.let { uri ->
+                    try {
+                        val intent = Intent(Intent.ACTION_VIEW).apply {
+                            setDataAndType(uri, "text/csv")
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        context.startActivity(intent)
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "无法打开文件", Toast.LENGTH_SHORT).show()
+                    }
                 }
+                showExportDialog = false
             },
-            dismissButton = {
-                TextButton(onClick = { showExportDialog = false }) {
-                    Text("确定")
-                }
-            }
+            dismissText = "确定",
+            onDismiss = { showExportDialog = false }
         )
     }
 
     // ═══ 权限失效警告弹窗 ═══
     if (showPermissionWarning) {
-        AlertDialog(
+        SmartLedgerDialog(
             onDismissRequest = { showPermissionWarning = false },
-            icon = {
-                Icon(
-                    Icons.Default.Warning,
-                    contentDescription = null,
-                    tint = SmartLedgerColors.expense,
-                    modifier = Modifier.size(32.dp)
-                )
+            iconTint = SmartLedgerColors.expense,
+            title = "通知监听权限已失效",
+            text = "重新编译安装后权限会被撤销。\n\n开启权限后才能自动识别微信、支付宝、银行卡的支付通知。",
+            confirmText = "去开启",
+            onConfirm = {
+                showPermissionWarning = false
+                navController.navigate("permission")
             },
-            title = { Text("通知监听权限已失效") },
-            text = {
-                Text("重新编译安装后权限会被撤销。\n\n开启权限后才能自动识别微信、支付宝、银行卡的支付通知。")
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showPermissionWarning = false
-                        navController.navigate("permission")
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = SmartLedgerColors.accent)
-                ) {
-                    Text("去开启")
+            dismissText = "稍后再说",
+            onDismiss = { showPermissionWarning = false }
+        )
+    }
+
+    // ═══ 重装恢复备份弹窗 ═══
+    if (showRestoreDialog && backupFileToRestore != null) {
+        val coroutineScope = rememberCoroutineScope()
+        var isRestoring by remember { mutableStateOf(false) }
+        SmartLedgerDialog(
+            onDismissRequest = { showRestoreDialog = false },
+            title = "发现历史备份",
+            text = "检测到您之前有备份数据「${backupFileToRestore}」。\n\n是否恢复这些数据？恢复后您的历史账单将重新出现。",
+            confirmText = if (isRestoring) "恢复中..." else "恢复数据",
+            onConfirm = {
+                if (!isRestoring) {
+                    isRestoring = true
+                    coroutineScope.launch {
+                        val count = com.smartledger.util.CsvImporter.restore(context, backupFileToRestore!!)
+                        isRestoring = false
+                        showRestoreDialog = false
+                        if (count > 0) {
+                            android.widget.Toast.makeText(context, "已恢复 $count 条记录", android.widget.Toast.LENGTH_SHORT).show()
+                            // 触发首页刷新
+                            isFirstLaunch = false
+                        }
+                    }
                 }
             },
-            dismissButton = {
-                TextButton(onClick = { showPermissionWarning = false }) {
-                    Text("稍后再说")
-                }
-            }
+            dismissText = "暂不恢复",
+            onDismiss = { showRestoreDialog = false }
         )
     }
 }

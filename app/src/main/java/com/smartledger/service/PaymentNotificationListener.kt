@@ -53,7 +53,9 @@ class PaymentNotificationListener : NotificationListenerService() {
             "com.spdb.mobilebank",      // 浦发银行
             "com.cmbc",                 // 民生银行
             "com.cebbank",              // 光大银行
-            "com.cib"                   // 兴业银行
+            "com.cib",                  // 兴业银行
+            "com.bankcomm",              // 交通银行
+            "com.bocomm"                 // 交通银行(新)
         )
 
         // ═══ 支出关键词 ═══
@@ -80,14 +82,18 @@ class PaymentNotificationListener : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         sbn ?: return
 
+        // 跳过 group summary 通知（系统聚合通知）
+        if (sbn.notification.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
+
         val packageName = sbn.packageName
         val notification = sbn.notification ?: return
         val extras = notification.extras ?: return
 
-        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
-        val content = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
+        // 兼容微信等把金额放在 BIG_TEXT 的通知
+        val (title, content) = extractNotificationText(extras)
+        val postTime = sbn.postTime  // 通知发布时间，比 currentTimeMillis 更准确
 
-        Log.d(TAG, "Notification: pkg=$packageName, title=$title, content=$content")
+        Log.d(TAG, "Notification: pkg=$packageName, title=$title, content=$content, postTime=$postTime")
 
         val text = "$title $content"
 
@@ -131,81 +137,59 @@ class PaymentNotificationListener : NotificationListenerService() {
             return
         }
 
+        // 过滤明显非交易通知
+        val nonTransactionKeywords = listOf("验证码", "登录", "登录验证", "可用额度", "信用额度", "账单日")
+        val hasTransactionVerb = EXPENSE_KEYWORDS.any { text.contains(it) } || INCOME_KEYWORDS.any { text.contains(it) }
+        if (nonTransactionKeywords.any { text.contains(it) } && !hasTransactionVerb) {
+            Log.d(TAG, "Non-transaction notification, skipping")
+            return
+        }
+
         val parsed = NotificationParser.parse(title, content, packageName)
         if (parsed == null) {
             Log.d(TAG, "Parse failed for: $title - $content")
+            if (isDebugEnabled()) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    android.widget.Toast.makeText(applicationContext, "⚠️ 解析失败: ${content.take(30)}...", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
             return
         }
 
         Log.d(TAG, "Parsed: amount=${parsed.amount}, merchant=${parsed.merchant}, method=${parsed.paymentMethod}, type=${parsed.type}")
 
+        // 调试模式下弹出提示
+        if (isDebugEnabled()) {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                val emoji = if (parsed.type == "income") "💰" else "💸"
+                android.widget.Toast.makeText(applicationContext, "$emoji ${parsed.type}: ¥${parsed.amount} (${parsed.paymentMethod})", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+
         scope.launch {
             try {
                 val db = AppDatabase.getInstance(applicationContext)
 
-                // ═══ 智能去重 ═══
-                // 场景：支付宝付款 → 支付宝通知 + 工商银行通知（间隔可能 5-15 秒）
-                // 规则：
-                //   1. 15秒内相同金额+相同类型 = 同一笔交易
-                //   2. 如果商户名也相同，窗口扩大到30秒
-                val dedupWindow = 15_000L  // 15秒基础窗口
-                val recentList = db.transactionDao().getByTimeRangeOnce(
-                    System.currentTimeMillis() - 30_000,  // 查询30秒内的记录
-                    System.currentTimeMillis()
-                )
-
-                val duplicate = recentList.find {
-                    val timeDiff = System.currentTimeMillis() - it.transactionTime
-                    val sameAmount = it.amount == parsed.amount
-                    val sameType = it.type == parsed.type
-
-                    if (!sameAmount || !sameType) return@find false
-
-                    // 相同商户名 → 30秒窗口
-                    val sameMerchant = try {
-                        val newMerchant = parsed.merchant
-                        val oldMerchant = it.merchant
-                        if (newMerchant != null && oldMerchant != null) {
-                            newMerchant.contains(oldMerchant) || oldMerchant.contains(newMerchant)
-                        } else {
-                            false
-                        }
-                    } catch (e: Exception) {
-                        false
-                    }
-
-                    if (sameMerchant) {
-                        timeDiff < 30_000
-                    } else {
-                        // 无商户名或不同 → 15秒窗口
-                        timeDiff < dedupWindow
-                    }
-                }
+                // ═══ 统一去重（金额转分 + 时间窗）═══
+                val amountCents = (parsed.amount * 100).toLong()
+                val duplicate = DedupHelper.findDuplicate(db.transactionDao(), amountCents, parsed.type, parsed.merchant, postTime)
 
                 if (duplicate != null) {
-                    val timeDiff = System.currentTimeMillis() - duplicate.transactionTime
-                    Log.d(TAG, "Duplicate detected: timeDiff=${timeDiff}ms, existing=${duplicate.paymentMethod}, new=${parsed.paymentMethod}, amount=${parsed.amount}")
-                    // 如果新通知的支付方式更具体（银行 > 微信），更新记录
-                    if (isMoreSpecificMethod(parsed.paymentMethod, duplicate.paymentMethod ?: "")) {
-                        db.transactionDao().update(duplicate.copy(
-                            paymentMethod = parsed.paymentMethod,
-                            merchant = parsed.merchant ?: duplicate.merchant
-                        ))
-                        Log.d(TAG, "Updated payment method to: ${parsed.paymentMethod}")
-                    }
+                    Log.d(TAG, "Duplicate: existing=${duplicate.paymentMethod}, new=${parsed.paymentMethod}, amount=${parsed.amount}")
+                    DedupHelper.mergeIfDuplicate(db.transactionDao(), duplicate, parsed.paymentMethod, parsed.merchant)
                     return@launch
                 }
 
                 val transaction = Transaction(
                     amount = parsed.amount,
                     type = parsed.type,
-                    categoryId = null,  // 先存null，后面更新
+                    categoryId = null,
                     merchant = parsed.merchant,
                     paymentMethod = parsed.paymentMethod,
                     note = null,
                     source = "auto",
                     notificationKey = parsed.notificationKey,
-                    transactionTime = System.currentTimeMillis()
+                    transactionTime = postTime  // 使用通知发布时间
                 )
                 val id = db.transactionDao().insert(transaction)
                 Log.d(TAG, "Transaction saved: id=$id, type=${parsed.type}")
@@ -264,6 +248,60 @@ class PaymentNotificationListener : NotificationListenerService() {
 
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {}
 
+    /**
+     * 从通知 extras 中提取完整的标题和正文
+     * 兼容微信等把金额放在 EXTRA_BIG_TEXT / EXTRA_TEXT_LINES 的通知
+     */
+    private fun extractNotificationText(extras: android.os.Bundle): Pair<String, String> {
+        // 标题：优先 EXTRA_TITLE，其次 EXTRA_TITLE_BIG
+        val title = (
+            extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim()
+                ?: extras.getCharSequence(Notification.EXTRA_TITLE_BIG)?.toString()?.trim()
+                ?: ""
+        )
+
+        // 正文：按优先级收集各字段，去重拼接
+        val parts = mutableListOf<String>()
+
+        fun addIfNew(text: CharSequence?) {
+            val trimmed = text?.toString()?.trim() ?: return
+            if (trimmed.isEmpty()) return
+            // 查找已存在且与新文本有包含关系的条目
+            val existingIndex = parts.indexOfFirst { it.contains(trimmed) || trimmed.contains(it) }
+            if (existingIndex >= 0) {
+                // 新文本更长 → 替换旧的短文本（保留信息量更大的版本）
+                if (trimmed.length > parts[existingIndex].length) {
+                    parts[existingIndex] = trimmed
+                }
+                // 新文本更短或相同 → 跳过
+            } else {
+                parts.add(trimmed)
+            }
+        }
+
+        // a) EXTRA_TEXT（标准正文）
+        addIfNew(extras.getCharSequence(Notification.EXTRA_TEXT))
+        // b) EXTRA_BIG_TEXT（展开后的长文本）
+        addIfNew(extras.getCharSequence(Notification.EXTRA_BIG_TEXT))
+        // c) EXTRA_TEXT_LINES（CharSequence[]，逐行拼接）
+        val lines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)
+        if (lines != null) {
+            for (line in lines) {
+                addIfNew(line)
+            }
+        }
+        // d) EXTRA_SUB_TEXT
+        addIfNew(extras.getCharSequence(Notification.EXTRA_SUB_TEXT))
+        // e) EXTRA_INFO_TEXT
+        addIfNew(extras.getCharSequence(Notification.EXTRA_INFO_TEXT))
+
+        val content = parts.joinToString(" ")
+
+        Log.d(TAG, "extractNotificationText: title='$title', content='$content' (from ${parts.size} parts)")
+
+        return title to content
+    }
+
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
@@ -286,7 +324,8 @@ class PaymentNotificationListener : NotificationListenerService() {
         transactionId: Long
     ) {
         val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra("openTransactionId", transactionId)
         }
         val pendingIntent = PendingIntent.getActivity(
             this, 0, intent,
@@ -309,30 +348,7 @@ class PaymentNotificationListener : NotificationListenerService() {
         manager.notify(NOTIFICATION_ID + transactionId.toInt(), notification)
     }
 
-    /**
-     * 判断支付方式是否比另一个更具体
-     * 优先级：银行卡 > 支付宝/微信 > 云闪付 > 银行卡
-     * 场景：微信用工商银行卡付款 → 先收到微信通知，后收到工商银行通知
-     *       工商银行更具体，应该保留工商银行作为支付方式
-     */
-    private fun isMoreSpecificMethod(newMethod: String, existingMethod: String): Boolean {
-        val priority = mapOf(
-            "工商银行" to 10,
-            "邮政储蓄" to 10,
-            "建设银行" to 10,
-            "中国银行" to 10,
-            "农业银行" to 10,
-            "招商银行" to 10,
-            "平安银行" to 10,
-            "浦发银行" to 10,
-            "民生银行" to 10,
-            "光大银行" to 10,
-            "兴业银行" to 10,
-            "银行卡" to 5,
-            "支付宝" to 3,
-            "微信" to 3,
-            "云闪付" to 3
-        )
-        return (priority[newMethod] ?: 0) > (priority[existingMethod] ?: 0)
+    private fun isDebugEnabled(): Boolean {
+        return getSharedPreferences("smart_ledger", MODE_PRIVATE).getBoolean("debug_toasts", false)
     }
 }

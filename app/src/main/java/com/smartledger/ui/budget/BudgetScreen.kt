@@ -22,6 +22,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.smartledger.data.db.entity.Category
+import com.smartledger.ui.components.SmartLedgerDialog
+import com.smartledger.ui.components.SmartLedgerInputDialog
 import com.smartledger.ui.theme.SmartLedgerColors
 import com.smartledger.util.CurrencyUtil
 import com.smartledger.util.DateUtil
@@ -327,30 +329,16 @@ private fun EditBudgetDialog(
 ) {
     var budgetText by remember { mutableStateOf(currentBudget.toLong().toString()) }
 
-    AlertDialog(
+    SmartLedgerInputDialog(
         onDismissRequest = onDismiss,
-        title = { Text("编辑月度预算") },
-        text = {
-            OutlinedTextField(
-                value = budgetText,
-                onValueChange = { budgetText = it },
-                label = { Text("预算金额") },
-                prefix = { Text("¥") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                singleLine = true
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                budgetText.toDoubleOrNull()?.let { onSave(it) }
-            }) {
-                Text("保存")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
-            }
+        title = "编辑月度预算",
+        label = "预算金额",
+        value = budgetText,
+        onValueChange = { budgetText = it },
+        prefix = "¥",
+        confirmText = "保存",
+        onConfirm = {
+            budgetText.toDoubleOrNull()?.let { onSave(it) }
         }
     )
 }

@@ -100,6 +100,26 @@ object NotificationParser {
     )
 
     // ═══════════════════════════════════════════════════════
+    // 抖音（需真机用 logcat PaymentListener 校对）
+    // ═══════════════════════════════════════════════════════
+    private val douyinExpensePatterns = listOf(
+        Regex("支付[￥¥]([\\d.]+)"),
+        Regex("已支付[￥¥]([\\d.]+)"),
+        Regex("付款[￥¥]([\\d.]+)"),
+        Regex("消费([\\d.]+)元"),
+        Regex("支出([\\d.]+)元"),
+        Regex("订单.*?[￥¥]([\\d.]+)"),
+        Regex("抖音支付.*?[￥¥]([\\d.]+)")
+    )
+
+    private val douyinIncomePatterns = listOf(
+        Regex("退款[￥¥]([\\d.]+)"),
+        Regex("退款.*?[￥¥]([\\d.]+)"),
+        Regex("到账[￥¥]([\\d.]+)"),
+        Regex("收入([\\d.]+)元")
+    )
+
+    // ═══════════════════════════════════════════════════════
     // 工商银行
     // ═══════════════════════════════════════════════════════
     private val icbcExpensePatterns = listOf(
@@ -177,7 +197,9 @@ object NotificationParser {
         Regex("扣款[￥¥]([\\d.]+)"),
         Regex("支出([\\d.]+)元"),
         Regex("消费([\\d.]+)元"),
-        Regex("一笔([\\d.]+)元的支出")
+        Regex("一笔([\\d.]+)元的支出"),
+        // 短信专用：金额XXX（无"元"后缀）
+        Regex("金额([\\d.]+)")
     )
 
     private val bankIncomePatterns = listOf(
@@ -203,7 +225,10 @@ object NotificationParser {
         Regex("在(.+?)消费"),
         Regex("于(.+?)消费"),
         Regex("退款至(.+?)(?:\\s|$)"),
-        Regex("来自(.+?)(?:\\s|$)")
+        Regex("来自(.+?)(?:\\s|$)"),
+        // 短信专用：账号XXX扣款/支出
+        Regex("账号(.+?)(?:扣款|支出|消费)"),
+        Regex("银行卡/账号(.+?)(?:扣款|支出|消费)")
     )
 
     // ═══════════════════════════════════════════════════════
@@ -214,6 +239,7 @@ object NotificationParser {
             packageName.contains("tencent.mm") -> "微信"
             packageName.contains("AlipayGphone") -> "支付宝"
             packageName.contains("unionpay") -> "云闪付"
+            packageName.contains("ugc.aweme") || packageName.contains("ugc.live") -> "抖音"
             packageName.contains("icbc") -> "工商银行"
             packageName.contains("chinapost") || packageName.contains("psbc") -> "邮政储蓄"
             packageName.contains("ccb") -> "建设银行"
@@ -221,6 +247,20 @@ object NotificationParser {
             packageName.contains("abcpocket") || packageName.contains("abchina") -> "农业银行"
             packageName.contains("cmb") -> "招商银行"
             packageName.contains("pingan") -> "平安银行"
+            // 短信专用：【银行名】格式
+            text.contains("【工商银行】") -> "工商银行"
+            text.contains("【建设银行】") -> "建设银行"
+            text.contains("【中国银行】") -> "中国银行"
+            text.contains("【农业银行】") -> "农业银行"
+            text.contains("【招商银行】") -> "招商银行"
+            text.contains("【邮政储蓄】") || text.contains("【邮储银行】") -> "邮政储蓄"
+            text.contains("【浦发银行】") -> "浦发银行"
+            text.contains("【民生银行】") -> "民生银行"
+            text.contains("【光大银行】") -> "光大银行"
+            text.contains("【兴业银行】") -> "兴业银行"
+            text.contains("【平安银行】") -> "平安银行"
+            text.contains("【中信银行】") -> "中信银行"
+            text.contains("【交通银行】") -> "交通银行"
             text.contains("微信") -> "微信"
             text.contains("支付宝") || text.contains("花呗") -> "支付宝"
             text.contains("云闪付") || text.contains("银联") -> "云闪付"
@@ -334,6 +374,7 @@ object NotificationParser {
             packageName.contains("tencent.mm") -> wechatExpensePatterns
             packageName.contains("AlipayGphone") -> alipayExpensePatterns
             packageName.contains("unionpay") -> unionpayExpensePatterns
+            packageName.contains("ugc.aweme") || packageName.contains("ugc.live") -> douyinExpensePatterns
             packageName.contains("icbc") -> icbcExpensePatterns
             packageName.contains("chinapost") || packageName.contains("psbc") -> psbcExpensePatterns
             else -> bankExpensePatterns
@@ -348,6 +389,7 @@ object NotificationParser {
             packageName.contains("tencent.mm") -> wechatIncomePatterns
             packageName.contains("AlipayGphone") -> alipayIncomePatterns
             packageName.contains("unionpay") -> unionpayIncomePatterns
+            packageName.contains("ugc.aweme") || packageName.contains("ugc.live") -> douyinIncomePatterns
             packageName.contains("icbc") -> icbcIncomePatterns
             packageName.contains("chinapost") || packageName.contains("psbc") -> psbcIncomePatterns
             else -> bankIncomePatterns

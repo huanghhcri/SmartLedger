@@ -21,8 +21,7 @@ object SmartCategorizer {
                 "美团", "饿了么", "外卖", "餐饮", "餐厅", "饭店", "食堂",
                 "奶茶", "咖啡", "蛋糕", "面包", "烧烤", "火锅", "小吃",
                 "必胜客", "汉堡王", "海底捞", "西贝", "呷哺", "真功夫",
-                "蜜雪冰城", "茶百道", "古茗", "沪上阿姨", "霸王茶姬",
-                "叮咚买菜", "盒马", "每日优鲜", "永辉", "大润发", "沃尔玛"
+                "蜜雪冰城", "茶百道", "古茗", "沪上阿姨", "霸王茶姬"
             )
         ),
 
@@ -46,7 +45,10 @@ object SmartCategorizer {
                 "唯品会", "得物", "闲鱼", "转转", "亚马逊",
                 "商城", "超市", "便利店", "711", "全家", "罗森",
                 "优衣库", "ZARA", "H&M", "耐克", "阿迪", "李宁", "安踏",
-                "华为", "小米", "苹果", "Apple", "数码", "电器"
+                "抖音", "快手", "小红书",
+                "华为", "小米", "苹果", "Apple", "数码", "电器",
+                "叮咚买菜", "盒马", "每日优鲜", "永辉", "大润发", "沃尔玛",
+                "山姆", "Costco", "开市客", "物美", "华润万家", "联华"
             )
         ),
 
@@ -58,9 +60,9 @@ object SmartCategorizer {
                 "Steam", "游戏", "充值", "点券", "钻石", "皮肤",
                 "电影", "影院", "万达", "猫眼", "淘票票",
                 "爱奇艺", "优酷", "腾讯视频", "B站", "哔哩哔哩",
-                "网易云", "QQ音乐", "Spotify", "会员", "VIP",
+                "网易云", "QQ音乐", "Spotify",
                 "KTV", "酒吧", "迪厅", "游乐", "景区", "门票",
-                "抖音", "快手", "小红书", "直播", "打赏"
+                "快手", "小红书", "直播", "打赏"
             )
         ),
 
@@ -158,8 +160,13 @@ object SmartCategorizer {
         }.lowercase()
 
         if (text.isBlank()) {
-            // 无信息时返回"其他"
             return categories.find { it.name == "其他" && it.type == type }?.id
+        }
+
+        // 0. 用户手动改过分类的商户优先匹配
+        val savedCategoryId = merchantOverrideMap[merchant?.trim()]
+        if (savedCategoryId != null && categories.any { it.id == savedCategoryId }) {
+            return savedCategoryId
         }
 
         // 1. 先按关键词匹配
@@ -193,6 +200,19 @@ object SmartCategorizer {
     // ═══════════════════════════════════════════════════════
     // 数据类
     // ═══════════════════════════════════════════════════════
+
+    // ═══════════════════════════════════════════════════════
+    // 用户手动分类覆盖（merchant → categoryId）
+    // UI 层在用户手动改分类后调用 saveMerchantCategory
+    // ═══════════════════════════════════════════════════════
+
+    private val merchantOverrideMap = mutableMapOf<String, Long>()
+
+    fun saveMerchantCategory(merchant: String, categoryId: Long) {
+        if (merchant.isNotBlank()) {
+            merchantOverrideMap[merchant.trim()] = categoryId
+        }
+    }
 
     private data class CategoryRule(
         val categoryName: String,

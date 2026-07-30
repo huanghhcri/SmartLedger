@@ -45,6 +45,12 @@ interface TransactionDao {
 
     @Query("SELECT * FROM transactions WHERE merchant LIKE '%' || :keyword || '%' OR note LIKE '%' || :keyword || '%' ORDER BY transactionTime DESC")
     fun search(keyword: String): Flow<List<Transaction>>
+
+    @Query("SELECT COUNT(*) FROM transactions")
+    suspend fun getCount(): Int
+
+    @Query("SELECT MIN(transactionTime) FROM transactions")
+    suspend fun getFirstTransactionTime(): Long?
 }
 
 data class CategoryTotal(

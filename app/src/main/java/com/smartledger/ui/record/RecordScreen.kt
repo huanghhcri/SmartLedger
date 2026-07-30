@@ -35,6 +35,7 @@ fun RecordScreen(
     var transactionType by remember { mutableStateOf("expense") }
     var amountText by remember { mutableStateOf("0") }
     var selectedCategory by remember { mutableStateOf<Category?>(null) }
+    var merchant by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
     var paymentMethod by remember { mutableStateOf("微信") }
 
@@ -98,6 +99,41 @@ fun RecordScreen(
                 }
             }
 
+            // ═══ 商户名 ═══
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Outlined.Person,
+                    contentDescription = null,
+                    tint = SmartLedgerColors.fgSecondary,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                OutlinedTextField(
+                    value = merchant,
+                    onValueChange = { merchant = it },
+                    placeholder = {
+                        Text(
+                            "商户名称（如蒙牛、美团）…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SmartLedgerColors.fgSecondary
+                        )
+                    },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Color.Transparent,
+                        unfocusedBorderColor = Color.Transparent,
+                        cursorColor = SmartLedgerColors.accent
+                    ),
+                    textStyle = MaterialTheme.typography.bodyMedium
+                )
+            }
+
             // ═══ 备注 + 日期行 ═══
             Row(
                 modifier = Modifier
@@ -133,7 +169,7 @@ fun RecordScreen(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Icon(
-                    Icons.Outlined.DateRange,
+                    Icons.Outlined.Info,
                     contentDescription = null,
                     tint = SmartLedgerColors.fgSecondary,
                     modifier = Modifier.size(18.dp)
@@ -237,12 +273,13 @@ fun RecordScreen(
                                 amount = amount,
                                 type = transactionType,
                                 categoryId = selectedCategory?.id,
-                                merchant = null,
+                                merchant = merchant.ifBlank { null },
                                 paymentMethod = paymentMethod,
                                 note = note.ifBlank { null },
                                 onSuccess = {
                                     amountText = "0"
                                     selectedCategory = null
+                                    merchant = ""
                                     note = ""
                                     onSaved()
                                 }

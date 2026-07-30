@@ -1,6 +1,8 @@
 package com.smartledger.ui.settings
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -18,21 +20,33 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.smartledger.ui.theme.SmartLedgerColors
+import com.smartledger.ui.theme.ThemeManager
+import com.smartledger.ui.theme.ThemeMode
 
 @Composable
 fun SettingsScreen(
-    onBack: () -> Unit = {}
+    onBack: () -> Unit = {},
+    onNavigateToFeedback: () -> Unit = {},
+    onNavigateToPrivacy: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    var darkMode by remember { mutableStateOf(false) }
-    var autoBackup by remember { mutableStateOf(true) }
-    var reminderEnabled by remember { mutableStateOf(true) }
+    val prefs = context.getSharedPreferences("smart_ledger", Context.MODE_PRIVATE)
+
+    // 深色模式状态
+    val themeMode by ThemeManager.themeMode
+    var autoBackupEnabled by remember {
+        mutableStateOf(prefs.getBoolean("auto_backup", true))
+    }
+    var debugToastsEnabled by remember {
+        mutableStateOf(prefs.getBoolean("debug_toasts", false))
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(SmartLedgerColors.bg)) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 80.dp)
+            contentPadding = PaddingValues(bottom = 32.dp)
         ) {
             // ═══ 顶部栏 ═══
             item {
@@ -54,58 +68,48 @@ fun SettingsScreen(
                 }
             }
 
-            item { Spacer(modifier = Modifier.height(16.dp)) }
+            item { Spacer(modifier = Modifier.height(8.dp)) }
 
-            // ═══ 通用 ═══
+            // ═══ 外观 ═══
             item {
-                SettingsGroupHeader("通用")
-                SettingsCard {
-                    SettingsItem(
-                        icon = Icons.Outlined.Language,
-                        label = "语言",
-                        value = "简体中文",
-                        onClick = { Toast.makeText(context, "暂不支持切换语言", Toast.LENGTH_SHORT).show() }
-                    )
-                    SettingsDivider()
-                    SettingsItem(
-                        icon = Icons.Outlined.AttachMoney,
-                        label = "货币格式",
-                        value = "CNY (¥)",
-                        onClick = { Toast.makeText(context, "暂不支持切换货币", Toast.LENGTH_SHORT).show() }
-                    )
-                    SettingsDivider()
-                    SettingsToggleItem(
-                        icon = Icons.Outlined.Notifications,
-                        label = "记账提醒",
-                        value = if (reminderEnabled) "每天 21:00" else "已关闭",
-                        checked = reminderEnabled,
-                        onToggle = { reminderEnabled = it }
-                    )
-                }
+                SectionTitle("外观")
             }
-
-            item { Spacer(modifier = Modifier.height(20.dp)) }
-
-            // ═══ 显示 ═══
             item {
-                SettingsGroupHeader("显示")
-                SettingsCard {
-                    SettingsToggleItem(
-                        icon = Icons.Outlined.DarkMode,
-                        label = "深色模式",
-                        checked = darkMode,
-                        onToggle = {
-                            darkMode = it
-                            Toast.makeText(context, "深色模式${if (it) "开启" else "关闭"}（重启生效）", Toast.LENGTH_SHORT).show()
-                        }
-                    )
-                    SettingsDivider()
-                    SettingsItem(
-                        icon = Icons.Outlined.TextFields,
-                        label = "字体大小",
-                        value = "标准",
-                        onClick = { Toast.makeText(context, "暂不支持调整字体大小", Toast.LENGTH_SHORT).show() }
-                    )
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = SmartLedgerColors.surface)
+                ) {
+                    Column {
+                        ThemeOption(
+                            label = "跟随系统",
+                            selected = themeMode == ThemeMode.SYSTEM,
+                            onClick = {
+                                ThemeManager.setTheme(ThemeMode.SYSTEM)
+                                prefs.edit().putString("theme_mode", "SYSTEM").apply()
+                            }
+                        )
+                        DividerLine()
+                        ThemeOption(
+                            label = "浅色模式",
+                            selected = themeMode == ThemeMode.LIGHT,
+                            onClick = {
+                                ThemeManager.setTheme(ThemeMode.LIGHT)
+                                prefs.edit().putString("theme_mode", "LIGHT").apply()
+                            }
+                        )
+                        DividerLine()
+                        ThemeOption(
+                            label = "深色模式",
+                            selected = themeMode == ThemeMode.DARK,
+                            onClick = {
+                                ThemeManager.setTheme(ThemeMode.DARK)
+                                prefs.edit().putString("theme_mode", "DARK").apply()
+                            }
+                        )
+                    }
                 }
             }
 
@@ -113,24 +117,101 @@ fun SettingsScreen(
 
             // ═══ 数据 ═══
             item {
-                SettingsGroupHeader("数据")
-                SettingsCard {
-                    SettingsToggleItem(
-                        icon = Icons.Outlined.Backup,
-                        label = "自动备份",
-                        checked = autoBackup,
-                        onToggle = { autoBackup = it }
-                    )
-                    SettingsDivider()
-                    SettingsItem(
-                        icon = Icons.Outlined.DeleteSweep,
-                        label = "清除缓存",
-                        value = "24.6 MB",
-                        valueColor = SmartLedgerColors.expense,
-                        onClick = {
-                            Toast.makeText(context, "缓存已清除", Toast.LENGTH_SHORT).show()
-                        }
-                    )
+                SectionTitle("数据")
+            }
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = SmartLedgerColors.surface)
+                ) {
+                    Column {
+                        SwitchItem(
+                            icon = Icons.Outlined.Download,
+                            label = "自动备份",
+                            description = "每周自动备份一次数据",
+                            checked = autoBackupEnabled,
+                            onCheckedChange = { enabled ->
+                                autoBackupEnabled = enabled
+                                prefs.edit().putBoolean("auto_backup", enabled).apply()
+                                if (enabled) {
+                                    com.smartledger.util.AutoBackupScheduler.schedule(context)
+                                    Toast.makeText(context, "已开启每周自动备份", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    com.smartledger.util.AutoBackupScheduler.cancel(context)
+                                    Toast.makeText(context, "已关闭自动备份", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        )
+                        DividerLine()
+                        SwitchItem(
+                            icon = Icons.Outlined.Info,
+                            label = "调试提示",
+                            description = "自动记账时弹出 Toast 提示（排查问题用）",
+                            checked = debugToastsEnabled,
+                            onCheckedChange = { enabled ->
+                                debugToastsEnabled = enabled
+                                prefs.edit().putBoolean("debug_toasts", enabled).apply()
+                            }
+                        )
+                    }
+                }
+            }
+
+            item { Spacer(modifier = Modifier.height(20.dp)) }
+
+            // ═══ 自动记账 ═══
+            item {
+                SectionTitle("自动记账")
+            }
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = SmartLedgerColors.surface)
+                ) {
+                    Column {
+                        MenuSettingItem(
+                            icon = Icons.Outlined.Notifications,
+                            label = "通知使用权",
+                            onClick = {
+                                try {
+                                    context.startActivity(android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).apply {
+                                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    })
+                                } catch (_: Exception) {}
+                            }
+                        )
+                        DividerLine()
+                        MenuSettingItem(
+                            icon = Icons.Outlined.Layers,
+                            label = "悬浮窗权限",
+                            onClick = {
+                                try {
+                                    context.startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
+                                        data = android.net.Uri.fromParts("package", context.packageName, null)
+                                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    })
+                                } catch (_: Exception) {}
+                            }
+                        )
+                        DividerLine()
+                        MenuSettingItem(
+                            icon = Icons.Outlined.BatteryStd,
+                            label = "电池优化",
+                            onClick = {
+                                try {
+                                    context.startActivity(android.content.Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    })
+                                } catch (_: Exception) {}
+                            }
+                        )
+                    }
                 }
             }
 
@@ -138,26 +219,36 @@ fun SettingsScreen(
 
             // ═══ 关于 ═══
             item {
-                SettingsGroupHeader("关于")
-                SettingsCard {
-                    SettingsItem(
-                        icon = Icons.Outlined.Info,
-                        label = "版本号",
-                        value = "v1.0.8",
-                        onClick = { }
-                    )
-                    SettingsDivider()
-                    SettingsItem(
-                        icon = Icons.Outlined.Policy,
-                        label = "隐私政策",
-                        onClick = { Toast.makeText(context, "隐私政策页面开发中", Toast.LENGTH_SHORT).show() }
-                    )
-                    SettingsDivider()
-                    SettingsItem(
-                        icon = Icons.Outlined.Feedback,
-                        label = "反馈建议",
-                        onClick = { Toast.makeText(context, "反馈功能开发中", Toast.LENGTH_SHORT).show() }
-                    )
+                SectionTitle("关于")
+            }
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = SmartLedgerColors.surface)
+                ) {
+                    Column {
+                        MenuSettingItem(
+                            icon = Icons.Outlined.Email,
+                            label = "反馈建议",
+                            onClick = onNavigateToFeedback
+                        )
+                        DividerLine()
+                        MenuSettingItem(
+                            icon = Icons.Outlined.Description,
+                            label = "隐私政策",
+                            onClick = onNavigateToPrivacy
+                        )
+                        DividerLine()
+                        MenuSettingItem(
+                            icon = Icons.Outlined.Info,
+                            label = "版本号",
+                            subtitle = "v1.0.2",
+                            onClick = { }
+                        )
+                    }
                 }
             }
         }
@@ -165,80 +256,49 @@ fun SettingsScreen(
 }
 
 @Composable
-private fun SettingsGroupHeader(title: String) {
+private fun SectionTitle(title: String) {
     Text(
         text = title,
         style = MaterialTheme.typography.titleSmall,
-        fontWeight = FontWeight.SemiBold,
+        fontWeight = FontWeight.Medium,
         color = SmartLedgerColors.fgSecondary,
-        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+        modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
     )
 }
 
 @Composable
-private fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp)
-            .background(SmartLedgerColors.surface, RoundedCornerShape(16.dp))
-    ) {
-        content()
-    }
-}
-
-@Composable
-private fun SettingsItem(
-    icon: ImageVector,
-    label: String,
-    value: String? = null,
-    valueColor: androidx.compose.ui.graphics.Color = SmartLedgerColors.fgSecondary,
-    onClick: () -> Unit
-) {
+private fun ThemeOption(label: String, selected: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 16.dp),
+            .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            icon,
-            contentDescription = label,
-            tint = SmartLedgerColors.fg,
-            modifier = Modifier.size(22.dp)
+        RadioButton(
+            selected = selected,
+            onClick = onClick,
+            colors = RadioButtonDefaults.colors(
+                selectedColor = SmartLedgerColors.accent,
+                unselectedColor = SmartLedgerColors.fgSecondary
+            )
         )
-        Spacer(modifier = Modifier.width(14.dp))
+        Spacer(modifier = Modifier.width(8.dp))
         Text(
             text = label,
             style = MaterialTheme.typography.bodyLarge,
-            color = SmartLedgerColors.fg,
-            modifier = Modifier.weight(1f)
-        )
-        if (value != null) {
-            Text(
-                text = value,
-                style = MaterialTheme.typography.bodyMedium,
-                color = valueColor
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-        }
-        Icon(
-            Icons.Outlined.ChevronRight,
-            contentDescription = null,
-            tint = SmartLedgerColors.fgSecondary,
-            modifier = Modifier.size(20.dp)
+            color = SmartLedgerColors.fg
         )
     }
 }
 
 @Composable
-private fun SettingsToggleItem(
+private fun SwitchItem(
     icon: ImageVector,
     label: String,
-    value: String? = null,
+    description: String,
     checked: Boolean,
-    onToggle: (Boolean) -> Unit
+    onCheckedChange: (Boolean) -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -254,22 +314,12 @@ private fun SettingsToggleItem(
         )
         Spacer(modifier = Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodyLarge,
-                color = SmartLedgerColors.fg
-            )
-            if (value != null) {
-                Text(
-                    text = value,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = SmartLedgerColors.fgSecondary
-                )
-            }
+            Text(label, style = MaterialTheme.typography.bodyLarge, color = SmartLedgerColors.fg)
+            Text(description, style = MaterialTheme.typography.bodySmall, color = SmartLedgerColors.fgSecondary)
         }
         Switch(
             checked = checked,
-            onCheckedChange = onToggle,
+            onCheckedChange = onCheckedChange,
             colors = SwitchDefaults.colors(
                 checkedThumbColor = SmartLedgerColors.accent,
                 checkedTrackColor = SmartLedgerColors.accentDim
@@ -279,7 +329,32 @@ private fun SettingsToggleItem(
 }
 
 @Composable
-private fun SettingsDivider() {
+private fun MenuSettingItem(
+    icon: ImageVector,
+    label: String,
+    subtitle: String? = null,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, contentDescription = label, tint = SmartLedgerColors.fg, modifier = Modifier.size(22.dp))
+        Spacer(modifier = Modifier.width(14.dp))
+        Text(label, style = MaterialTheme.typography.bodyLarge, color = SmartLedgerColors.fg, modifier = Modifier.weight(1f))
+        if (subtitle != null) {
+            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = SmartLedgerColors.fgSecondary)
+        }
+        Spacer(modifier = Modifier.width(4.dp))
+        Icon(Icons.Outlined.ChevronRight, contentDescription = null, tint = SmartLedgerColors.fgSecondary, modifier = Modifier.size(20.dp))
+    }
+}
+
+@Composable
+private fun DividerLine() {
     HorizontalDivider(
         modifier = Modifier.padding(horizontal = 16.dp),
         color = SmartLedgerColors.border,

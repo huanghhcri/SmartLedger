@@ -1,40 +1,50 @@
 package com.smartledger.ui.theme
 
+import android.app.Activity
+import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 
 // ═══════════════════════════════════════════════════════
 // SmartLedger Design Tokens — 暖白 Linear 风格
-// 从 Open Design 原型 HTML CSS 变量直接映射
 // ═══════════════════════════════════════════════════════
 
-// 基础色
-val Background = Color(0xFFFAFAF8)       // --bg: 奶白暖调背景
-val Surface = Color(0xFFFFFFFF)           // --surface: 卡片白
-val SurfaceHover = Color(0xFFF5F5F3)      // --surface-hover
-val Foreground = Color(0xFF1A1A1A)        // --fg: 主文字（深灰，非纯黑）
-val ForegroundSecondary = Color(0xFF8B8B8B) // --fg-secondary: 次要文字
-val Border = Color(0xFFE8E8E4)            // --border: 分割线
-val BorderSubtle = Color(0xFFF0F0EC)      // 更细分割线
+// 亮色基础色
+val Background = Color(0xFFFAFAF8)
+val Surface = Color(0xFFFFFFFF)
+val SurfaceHover = Color(0xFFF5F5F3)
+val Foreground = Color(0xFF1A1A1A)
+val ForegroundSecondary = Color(0xFF8B8B8B)
+val Border = Color(0xFFE8E8E4)
+val BorderSubtle = Color(0xFFF0F0EC)
+
+// 深色基础色
+val DarkBackground = Color(0xFF111113)
+val DarkSurface = Color(0xFF1A1A1E)
+val DarkSurfaceHover = Color(0xFF232328)
+val DarkForeground = Color(0xFFE8E8EA)
+val DarkForegroundSecondary = Color(0xFF8A8A8E)
+val DarkBorder = Color(0xFF2A2A2E)
+val DarkBorderSubtle = Color(0xFF222226)
 
 // 强调色
-val Accent = Color(0xFF6C63FF)            // --accent: 蓝紫强调色
-val AccentDim = Color(0x1F6C63FF)         // --accent-dim: 12% 透明
+val Accent = Color(0xFF6C63FF)
+val AccentDim = Color(0x1F6C63FF)
+val DarkAccentDim = Color(0x336C63FF)
 
-// 收支配色（降饱和）
-val ExpenseRed = Color(0xFFD94848)        // --expense: 支出红（降饱和）
-val ExpenseRedDim = Color(0x1AD94848)     // --expense-dim: 10% 透明
-val ExpenseRedLight = Color(0x1AD94848)   // 浅底色
-val IncomeGreen = Color(0xFF2D9D63)       // --income: 收入绿（降饱和）
-val IncomeGreenDim = Color(0x1A2D9D63)    // --income-dim: 10% 透明
-val IncomeGreenLight = Color(0x1A2D9D63)  // 浅底色
+// 收支配色
+val ExpenseRed = Color(0xFFD94848)
+val ExpenseRedDim = Color(0x1AD94848)
+val IncomeGreen = Color(0xFF2D9D63)
+val IncomeGreenDim = Color(0x1A2D9D63)
 
-// 图表色（柔灰度系列，用于统计页饼图）
+// 图表色
 val ChartGray1 = Color(0xFF94A3B8)
 val ChartGray2 = Color(0xFFA8B8CC)
 val ChartGray3 = Color(0xFFBCC8DA)
@@ -42,12 +52,21 @@ val ChartGray4 = Color(0xFFCBD5E1)
 val ChartGray5 = Color(0xFFDDE4ED)
 val ChartGray6 = Color(0xFFE8EDF3)
 
+val DarkChartGray1 = Color(0xFF475569)
+val DarkChartGray2 = Color(0xFF526275)
+val DarkChartGray3 = Color(0xFF5D6F85)
+val DarkChartGray4 = Color(0xFF687C95)
+val DarkChartGray5 = Color(0xFF7389A5)
+val DarkChartGray6 = Color(0xFF7E96B5)
+
 // 底部导航
-val NavUnselected = Color(0xFFB0B0B0)     // 未选中
-val NavSelected = Foreground               // 选中：深灰
+val NavUnselected = Color(0xFFB0B0B0)
+val NavSelected = Foreground
+val DarkNavUnselected = Color(0xFF666668)
+val DarkNavSelected = DarkForeground
 
 // ═══════════════════════════════════════════════════════
-// 自定义颜色扩展（通过 CompositionLocal 传递）
+// 自定义颜色扩展
 // ═══════════════════════════════════════════════════════
 
 @Immutable
@@ -98,13 +117,87 @@ private val LightColorScheme = lightColorScheme(
     outlineVariant = BorderSubtle,
 )
 
+private val DarkColorScheme = darkColorScheme(
+    primary = Accent,
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFF2D2466),
+    onPrimaryContainer = Color(0xFFCBC2FF),
+    secondary = DarkForegroundSecondary,
+    onSecondary = Color.White,
+    secondaryContainer = DarkSurfaceHover,
+    onSecondaryContainer = DarkForeground,
+    tertiary = IncomeGreen,
+    onTertiary = Color.White,
+    background = DarkBackground,
+    onBackground = DarkForeground,
+    surface = DarkSurface,
+    onSurface = DarkForeground,
+    surfaceVariant = DarkSurfaceHover,
+    onSurfaceVariant = DarkForegroundSecondary,
+    outline = DarkBorder,
+    outlineVariant = DarkBorderSubtle,
+)
+
+// ═══════════════════════════════════════════════════════
+// 主题模式管理
+// ═══════════════════════════════════════════════════════
+
+enum class ThemeMode { SYSTEM, LIGHT, DARK }
+
+object ThemeManager {
+    private val _themeMode = mutableStateOf(ThemeMode.SYSTEM)
+    val themeMode: State<ThemeMode> = _themeMode
+
+    fun setTheme(mode: ThemeMode) {
+        _themeMode.value = mode
+    }
+
+    fun init(mode: ThemeMode) {
+        _themeMode.value = mode
+    }
+}
+
+// ═══════════════════════════════════════════════════════
+// 主题入口
+// ═══════════════════════════════════════════════════════
+
 @Composable
 fun SmartLedgerTheme(
     content: @Composable () -> Unit
 ) {
-    val colorScheme = LightColorScheme
+    val themeMode by ThemeManager.themeMode
+    val isDark = when (themeMode) {
+        ThemeMode.DARK -> true
+        ThemeMode.LIGHT -> false
+        ThemeMode.SYSTEM -> isSystemInDarkTheme()
+    }
 
-    CompositionLocalProvider(LocalExtendedColors provides ExtendedColors()) {
+    val colorScheme = if (isDark) DarkColorScheme else LightColorScheme
+
+    val extendedColors = if (isDark) ExtendedColors(
+        accentDim = DarkAccentDim,
+        background = DarkBackground,
+        surface = DarkSurface,
+        surfaceHover = DarkSurfaceHover,
+        foreground = DarkForeground,
+        foregroundSecondary = DarkForegroundSecondary,
+        border = DarkBorder,
+        navUnselected = DarkNavUnselected,
+        navSelected = DarkNavSelected,
+        chartColors = listOf(DarkChartGray1, DarkChartGray2, DarkChartGray3, DarkChartGray4, DarkChartGray5, DarkChartGray6)
+    ) else ExtendedColors()
+
+    // 状态栏颜色
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        SideEffect {
+            val window = (view.context as Activity).window
+            window.statusBarColor = extendedColors.background.toArgb()
+            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !isDark
+        }
+    }
+
+    CompositionLocalProvider(LocalExtendedColors provides extendedColors) {
         MaterialTheme(
             colorScheme = colorScheme,
             typography = Typography,

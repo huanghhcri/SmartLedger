@@ -3,7 +3,9 @@ package com.smartledger.ui.permission
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.PowerManager
 import android.provider.Settings
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -12,89 +14,99 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import com.smartledger.ui.theme.SmartLedgerColors
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PermissionGuideScreen(
     onBack: () -> Unit = {},
     onComplete: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
 
-    // 检查各项权限状态
-    var notificationListenerEnabled by remember {
-        mutableStateOf(isNotificationListenerEnabled(context))
-    }
-    var canDrawOverlays by remember {
-        mutableStateOf(Settings.canDrawOverlays(context))
-    }
+    // 权限状态
+    var notificationListenerEnabled by remember { mutableStateOf(isNotificationListenerEnabled(context)) }
+    var canDrawOverlays by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
+    var batteryOptimized by remember { mutableStateOf(isBatteryOptimizationIgnored(context)) }
+    var smsPermissionGranted by remember { mutableStateOf(
+        androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECEIVE_SMS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    ) }
 
-    // 每次页面重新可见时刷新权限状态
-    LaunchedEffect(Unit) {
-        notificationListenerEnabled = isNotificationListenerEnabled(context)
-        canDrawOverlays = Settings.canDrawOverlays(context)
+    // 每次页面恢复时自动刷新权限状态
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                notificationListenerEnabled = isNotificationListenerEnabled(context)
+                canDrawOverlays = Settings.canDrawOverlays(context)
+                batteryOptimized = isBatteryOptimizationIgnored(context)
+                smsPermissionGranted = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECEIVE_SMS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
 
     Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("权限设置", fontWeight = FontWeight.Bold) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "返回")
-                    }
-                }
-            )
-        }
+        containerColor = SmartLedgerColors.bg
     ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // 欢迎文字
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // 欢迎卡片
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                )
+                colors = CardDefaults.cardColors(containerColor = SmartLedgerColors.accentDim)
             ) {
                 Column(
-                    modifier = Modifier.padding(20.dp),
+                    modifier = Modifier.padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text("🎉", style = MaterialTheme.typography.displaySmall)
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("🎉", fontSize = 36.sp)
+                    Spacer(modifier = Modifier.height(12.dp))
                     Text(
                         text = "欢迎使用智能记账",
                         style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        color = SmartLedgerColors.fg
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "自动检测微信、支付宝、云闪付的支付行为，轻松记录每一笔开支",
+                        text = "自动检测微信、支付宝、云闪付的支付行为\n轻松记录每一笔开支",
                         style = MaterialTheme.typography.bodyMedium,
                         textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                        color = SmartLedgerColors.fgSecondary
                     )
                 }
             }
 
             Text(
-                text = "请开启以下权限以确保功能正常：",
+                text = "请开启以下权限：",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Medium,
-                modifier = Modifier.padding(top = 8.dp)
+                color = SmartLedgerColors.fg,
+                modifier = Modifier.padding(top = 4.dp)
             )
 
+            // 4 项权限
             PermissionItem(
                 icon = Icons.Default.Notifications,
                 title = "通知使用权",
@@ -112,60 +124,62 @@ fun PermissionGuideScreen(
             )
 
             PermissionItem(
-                icon = Icons.Default.OpenInNew,
+                icon = Icons.Default.Notifications,
+                title = "短信权限",
+                description = "读取银行短信作为兜底通道（通知监听漏掉时补充）",
+                isGranted = smsPermissionGranted,
+                onClick = { requestSmsPermission(context) }
+            )
+
+            PermissionItem(
+                icon = Icons.Default.Add,
                 title = "自启动权限",
-                description = "允许App开机自启（iQOO/vivo必须）",
-                isGranted = false,
+                description = "允许App后台自启（vivo/iQOO必须）",
+                isGranted = false,  // 无法通过 API 检测，引导用户手动开启
                 onClick = { openAutoStartSettings(context) }
             )
 
             PermissionItem(
-                icon = Icons.Default.BatteryStd,
+                icon = Icons.Default.Notifications,
                 title = "电池优化",
                 description = "关闭电池优化，防止后台被杀",
-                isGranted = false,
+                isGranted = batteryOptimized,
                 onClick = { openBatteryOptimization(context) }
             )
 
             Spacer(modifier = Modifier.weight(1f))
 
-            // 刷新按钮
-            OutlinedButton(
-                onClick = {
-                    notificationListenerEnabled = isNotificationListenerEnabled(context)
-                    canDrawOverlays = Settings.canDrawOverlays(context)
-                },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(Icons.Default.Refresh, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("刷新权限状态")
-            }
-
             // 完成按钮
             Button(
                 onClick = onComplete,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp),
                 shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = SmartLedgerColors.accent),
                 enabled = notificationListenerEnabled && canDrawOverlays
             ) {
                 Text(
                     "完成设置，开始使用",
-                    modifier = Modifier.padding(vertical = 8.dp),
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
                 )
             }
 
-            // 跳过提示
+            // 跳过
             if (!notificationListenerEnabled || !canDrawOverlays) {
                 TextButton(
                     onClick = onComplete,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("稍后设置，先手动记账")
+                    Text(
+                        "稍后设置，先手动记账",
+                        color = SmartLedgerColors.fgSecondary
+                    )
                 }
             }
+
+            Spacer(modifier = Modifier.height(8.dp))
         }
     }
 }
@@ -181,6 +195,7 @@ private fun PermissionItem(
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = SmartLedgerColors.surface),
         onClick = onClick
     ) {
         Row(
@@ -189,52 +204,81 @@ private fun PermissionItem(
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                icon,
-                contentDescription = title,
-                tint = if (isGranted) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(32.dp)
-            )
-            Spacer(modifier = Modifier.width(16.dp))
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(
+                        if (isGranted) SmartLedgerColors.accentDim
+                        else SmartLedgerColors.surfaceHover
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = title,
+                    tint = if (isGranted) SmartLedgerColors.accent
+                    else SmartLedgerColors.fgSecondary,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(title, fontWeight = FontWeight.Medium)
+                Text(
+                    title,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 15.sp,
+                    color = SmartLedgerColors.fg
+                )
                 Text(
                     description,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = SmartLedgerColors.fgSecondary
                 )
             }
             if (isGranted) {
                 Icon(
-                    Icons.Default.CheckCircle,
+                    Icons.Default.Add,
                     contentDescription = "已开启",
-                    tint = MaterialTheme.colorScheme.primary
+                    tint = SmartLedgerColors.accent,
+                    modifier = Modifier.size(24.dp)
                 )
             } else {
                 Icon(
                     Icons.Default.ChevronRight,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = SmartLedgerColors.fgSecondary,
+                    modifier = Modifier.size(24.dp)
                 )
             }
         }
     }
 }
 
+// ═══ 权限检测函数 ═══
+
 private fun isNotificationListenerEnabled(context: Context): Boolean {
     val flat = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
     if (flat.isNullOrEmpty()) return false
-    val packageName = context.packageName
-    // 匹配两种格式：com.smartledger/.service.PaymentNotificationListener 或 com.smartledger/com.smartledger.service.PaymentNotificationListener
     return flat.contains("PaymentNotificationListener")
 }
 
+private fun isBatteryOptimizationIgnored(context: Context): Boolean {
+    val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+    return pm.isIgnoringBatteryOptimizations(context.packageName)
+}
+
+// ═══ 跳转函数 ═══
+
 private fun openNotificationListenerSettings(context: Context) {
     try {
-        context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+        context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
     } catch (e: Exception) {
-        context.startActivity(Intent(Settings.ACTION_SETTINGS))
+        context.startActivity(Intent(Settings.ACTION_SETTINGS).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
     }
 }
 
@@ -243,10 +287,13 @@ private fun openOverlaySettings(context: Context) {
         context.startActivity(
             Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
                 data = android.net.Uri.fromParts("package", context.packageName, null)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
         )
     } catch (e: Exception) {
-        context.startActivity(Intent(Settings.ACTION_SETTINGS))
+        context.startActivity(Intent(Settings.ACTION_SETTINGS).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
     }
 }
 
@@ -257,6 +304,7 @@ private fun openAutoStartSettings(context: Context) {
                 "com.vivo.permissionmanager",
                 "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"
             )
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(intent)
     } catch (e: Exception) {
@@ -266,6 +314,7 @@ private fun openAutoStartSettings(context: Context) {
                     "com.miui.securitycenter",
                     "com.miui.permcenter.autostart.AutoStartManagementActivity"
                 )
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
         } catch (e2: Exception) {
@@ -276,9 +325,25 @@ private fun openAutoStartSettings(context: Context) {
 
 private fun openBatteryOptimization(context: Context) {
     try {
-        context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
     } catch (e: Exception) {
         openAppDetails(context)
+    }
+}
+
+private fun requestSmsPermission(context: Context) {
+    try {
+        val intent = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = android.net.Uri.fromParts("package", context.packageName, null)
+            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        context.startActivity(android.content.Intent(android.provider.Settings.ACTION_SETTINGS).apply {
+            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
     }
 }
 
@@ -287,9 +352,12 @@ private fun openAppDetails(context: Context) {
         context.startActivity(
             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                 data = android.net.Uri.fromParts("package", context.packageName, null)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
         )
     } catch (e: Exception) {
-        context.startActivity(Intent(Settings.ACTION_SETTINGS))
+        context.startActivity(Intent(Settings.ACTION_SETTINGS).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
     }
 }
