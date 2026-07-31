@@ -199,7 +199,9 @@ fun FeedbackScreen(
                             appendLine("---")
                             appendLine("设备信息：${android.os.Build.MODEL}")
                             appendLine("系统版本：Android ${android.os.Build.VERSION.RELEASE}")
-                            appendLine("App版本：v1.0.2")
+                            appendLine(
+                                "App版本：${com.smartledger.util.UpdateChecker.currentVersionLabel(context)}"
+                            )
                         }
                         val intent = Intent(Intent.ACTION_SENDTO).apply {
                             data = Uri.parse("mailto:")

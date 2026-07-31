@@ -28,25 +28,53 @@ object UpdateChecker {
         val htmlUrl: String           // Release 页面链接
     )
 
-    /**
-     * 检查是否有新版本
-     * @return UpdateInfo 如果有更新，null 如果已是最新
-     */
-    suspend fun checkForUpdate(context: Context): UpdateInfo? = withContext(Dispatchers.IO) {
-        try {
-            val currentVersion = context.packageManager
-                .getPackageInfo(context.packageName, 0).versionName ?: "0.0.0"
+    sealed class CheckResult {
+        data class HasUpdate(val info: UpdateInfo) : CheckResult()
+        data class UpToDate(val currentVersion: String, val latestTag: String) : CheckResult()
+        data class Failed(val message: String) : CheckResult()
+    }
 
+    /** 当前安装版本展示文案，如 "v1.0.10" */
+    fun currentVersionLabel(context: Context): String {
+        val name = try {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        } catch (_: Exception) {
+            null
+        } ?: "0.0.0"
+        return if (name.startsWith("v")) name else "v$name"
+    }
+
+    /**
+     * 检查是否有新版本（读取 GitHub Releases 的 latest，与本地 versionName 比较）
+     */
+    suspend fun checkForUpdate(context: Context): UpdateInfo? {
+        return when (val result = checkUpdate(context)) {
+            is CheckResult.HasUpdate -> result.info
+            else -> null
+        }
+    }
+
+    suspend fun checkUpdate(context: Context): CheckResult = withContext(Dispatchers.IO) {
+        val currentLabel = currentVersionLabel(context)
+        val local = currentLabel.removePrefix("v")
+        try {
             val url = URL(API_URL)
             val conn = url.openConnection() as HttpURLConnection
             conn.setRequestProperty("Accept", "application/vnd.github.v3+json")
             conn.setRequestProperty("User-Agent", "SmartLedger-Android")
-            conn.connectTimeout = 5000
-            conn.readTimeout = 5000
+            conn.connectTimeout = 8000
+            conn.readTimeout = 8000
 
-            if (conn.responseCode != 200) {
-                Log.w(TAG, "GitHub API returned ${conn.responseCode}")
-                return@withContext null
+            val code = conn.responseCode
+            if (code != 200) {
+                val err = try {
+                    conn.errorStream?.bufferedReader()?.readText()
+                } catch (_: Exception) {
+                    null
+                }
+                conn.disconnect()
+                Log.w(TAG, "GitHub API returned $code $err")
+                return@withContext CheckResult.Failed("无法连接更新服务（$code），请稍后重试")
             }
 
             val body = conn.inputStream.bufferedReader().readText()
@@ -54,10 +82,9 @@ object UpdateChecker {
 
             val json = JSONObject(body)
             val tagName = json.getString("tag_name")           // e.g. "v1.0.3"
-            val releaseNotes = stripMarkdown(json.optString("body", ""))  // 去掉 Markdown 格式
-            val htmlUrl = json.getString("html_url")            // Release 页面
+            val releaseNotes = stripMarkdown(json.optString("body", ""))
+            val htmlUrl = json.getString("html_url")
 
-            // 查找 APK 下载链接
             var apkUrl: String? = null
             val assets = json.optJSONArray("assets")
             if (assets != null) {
@@ -70,23 +97,24 @@ object UpdateChecker {
                 }
             }
 
-            // 版本比较：去掉 "v" 前缀后按 . 分段比较
             val remote = tagName.removePrefix("v")
-            val local = currentVersion.removePrefix("v")
+            Log.d(TAG, "local=$local remote=$remote tag=$tagName")
 
             if (isNewerVersion(local, remote)) {
-                UpdateInfo(
-                    versionName = tagName,
-                    releaseNotes = releaseNotes,
-                    apkUrl = apkUrl,
-                    htmlUrl = htmlUrl
+                CheckResult.HasUpdate(
+                    UpdateInfo(
+                        versionName = tagName,
+                        releaseNotes = releaseNotes,
+                        apkUrl = apkUrl,
+                        htmlUrl = htmlUrl
+                    )
                 )
             } else {
-                null
+                CheckResult.UpToDate(currentLabel, tagName)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Check update failed", e)
-            null
+            CheckResult.Failed("检查更新失败：${e.message ?: "网络异常"}")
         }
     }
 

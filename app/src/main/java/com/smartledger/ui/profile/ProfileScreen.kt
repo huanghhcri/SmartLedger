@@ -170,9 +170,12 @@ fun ProfileScreen(
 
             Spacer(modifier = Modifier.weight(1f))
 
-            // ═══ 版本号 ═══
+            // ═══ 版本号（读安装包，勿写死）═══
+            val appVersionLabel = remember {
+                com.smartledger.util.UpdateChecker.currentVersionLabel(context)
+            }
             Text(
-                text = "v1.0.2",
+                text = appVersionLabel,
                 style = MaterialTheme.typography.labelMedium,
                 color = SmartLedgerColors.fgSecondary
             )

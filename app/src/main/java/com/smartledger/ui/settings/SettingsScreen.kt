@@ -44,10 +44,15 @@ fun SettingsScreen(
         mutableStateOf(prefs.getBoolean("debug_toasts", false))
     }
 
-    // 检查更新状态
+    // 检查更新状态（版本号读安装包，勿写死）
+    val appVersionLabel = remember {
+        com.smartledger.util.UpdateChecker.currentVersionLabel(context)
+    }
     var isCheckingUpdate by remember { mutableStateOf(false) }
     var updateResult by remember { mutableStateOf<com.smartledger.util.UpdateChecker.UpdateInfo?>(null) }
     var showNoUpdate by remember { mutableStateOf(false) }
+    var noUpdateMessage by remember { mutableStateOf("") }
+    var updateError by remember { mutableStateOf<String?>(null) }
     val coroutineScope = rememberCoroutineScope()
 
     Box(modifier = Modifier.fillMaxSize().background(SmartLedgerColors.bg)) {
@@ -302,13 +307,22 @@ fun SettingsScreen(
                                 if (!isCheckingUpdate) {
                                     isCheckingUpdate = true
                                     coroutineScope.launch {
-                                        val info = com.smartledger.util.UpdateChecker.checkForUpdate(context)
-                                        isCheckingUpdate = false
-                                        if (info != null) {
-                                            updateResult = info
-                                        } else {
-                                            showNoUpdate = true
+                                        when (val result =
+                                            com.smartledger.util.UpdateChecker.checkUpdate(context)
+                                        ) {
+                                            is com.smartledger.util.UpdateChecker.CheckResult.HasUpdate -> {
+                                                updateResult = result.info
+                                            }
+                                            is com.smartledger.util.UpdateChecker.CheckResult.UpToDate -> {
+                                                noUpdateMessage =
+                                                    "当前版本 ${result.currentVersion} 已是最新（线上 ${result.latestTag}），无需更新。"
+                                                showNoUpdate = true
+                                            }
+                                            is com.smartledger.util.UpdateChecker.CheckResult.Failed -> {
+                                                updateError = result.message
+                                            }
                                         }
+                                        isCheckingUpdate = false
                                     }
                                 }
                             }
@@ -317,7 +331,7 @@ fun SettingsScreen(
                         MenuSettingItem(
                             icon = Icons.Outlined.Info,
                             label = "版本号",
-                            subtitle = "v1.0.2",
+                            subtitle = appVersionLabel,
                             onClick = { }
                         )
                     }
@@ -351,9 +365,22 @@ fun SettingsScreen(
             onDismissRequest = { showNoUpdate = false },
             iconTint = SmartLedgerColors.income,
             title = "已是最新版本",
-            text = "当前版本 v1.0.2 已是最新，无需更新。",
+            text = noUpdateMessage.ifBlank {
+                "当前版本 $appVersionLabel 已是最新，无需更新。"
+            },
             confirmText = "好的",
             onConfirm = { showNoUpdate = false }
+        )
+    }
+
+    updateError?.let { msg ->
+        com.smartledger.ui.components.SmartLedgerDialog(
+            onDismissRequest = { updateError = null },
+            iconTint = SmartLedgerColors.expense,
+            title = "检查更新失败",
+            text = msg,
+            confirmText = "好的",
+            onConfirm = { updateError = null }
         )
     }
 }
