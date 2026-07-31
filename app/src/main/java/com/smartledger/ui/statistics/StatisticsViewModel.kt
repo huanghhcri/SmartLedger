@@ -47,6 +47,11 @@ class StatisticsViewModel(application: Application) : AndroidViewModel(applicati
         _timeRange.value = getTimeRange(period)
     }
 
+    /** 回到前台时刷新「日/周」等相对今天的区间 */
+    fun refreshTimeRange() {
+        _timeRange.value = getTimeRange(_selectedPeriod.value)
+    }
+
     private fun getTimeRange(period: String): Pair<Long, Long> {
         return when (period) {
             "day" -> Pair(DateUtil.getTodayStartTime(), DateUtil.getTodayEndTime())

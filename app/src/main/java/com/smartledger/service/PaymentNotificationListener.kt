@@ -1,43 +1,45 @@
 package com.smartledger.service
 
 import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
-import android.content.Context
-import android.content.Intent
+import android.content.ComponentName
+import android.os.Handler
+import android.os.Looper
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
-import com.smartledger.MainActivity
-import com.smartledger.R
 import com.smartledger.data.db.AppDatabase
 import com.smartledger.data.db.entity.Transaction
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 class PaymentNotificationListener : NotificationListenerService() {
 
     companion object {
         private const val TAG = "PaymentListener"
-        private const val CHANNEL_ID = "payment_detected"
-        private const val NOTIFICATION_ID = 2001
 
-        // ═══ 支付类 App ═══
+        // ═══ 支付 / 电商收银台 ═══
         private val MONITORED_PACKAGES = setOf(
-            "com.tencent.mm",           // 微信
+            "com.tencent.mm",              // 微信
             "com.eg.android.AlipayGphone", // 支付宝
-            "com.unionpay",             // 云闪付
-            "com.ss.android.ugc.aweme", // 抖音
-            "com.ss.android.ugc.live"   // 抖音极速版
+            "com.unionpay",                // 云闪付
+            "com.ss.android.ugc.aweme",    // 抖音
+            "com.ss.android.ugc.live",     // 抖音极速版
+            "com.jd.jrapp",                // 京东金融（银行卡支付确认）
+            "com.jingdong.app.mall",       // 京东
+            "com.jd.jdlite",               // 京东极速版
+            "com.taobao.taobao",           // 淘宝（银行卡支付）
+            "com.tmall.wireless"           // 天猫
         )
 
-        // ═══ 银行类 App ═══
+        // ═══ 银行类 App（精确包名；另有 contains 宽松匹配）═══
         private val BANK_PACKAGES = setOf(
             "com.icbc",                 // 工商银行
             "com.icbc.im",              // 工商银行(融e联)
             "com.icbc.icbcmb",          // 工商银行(手机银行)
+            "com.icbc.android",         // 工商银行(部分机型)
             "com.chinapost.pbs",        // 邮政储蓄银行
             "com.psbc",                 // 邮政储蓄银行(新)
             "com.ccb.start",            // 建设银行
@@ -54,8 +56,15 @@ class PaymentNotificationListener : NotificationListenerService() {
             "com.cmbc",                 // 民生银行
             "com.cebbank",              // 光大银行
             "com.cib",                  // 兴业银行
-            "com.bankcomm",              // 交通银行
-            "com.bocomm"                 // 交通银行(新)
+            "com.bankcomm",             // 交通银行
+            "com.bocomm"                // 交通银行(新)
+        )
+
+        /** 包名片段：兼容厂商定制包名（如 com.icbc.xxx） */
+        private val BANK_PACKAGE_HINTS = listOf(
+            "icbc", "psbc", "chinapost", "ccb", "abchina", "bankabc",
+            "bocmbci", "bocsoft", "cmb.pb", "cmb.b2c", "pingan.paces",
+            "spdb", "cmbc", "cebbank", "bankcomm", "bocomm", "cib"
         )
 
         // ═══ 支出关键词 ═══
@@ -72,11 +81,46 @@ class PaymentNotificationListener : NotificationListenerService() {
         )
     }
 
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate() {
         super.onCreate()
-        createNotificationChannel()
+        com.smartledger.util.NotificationStyle.ensureChannels(this)
+    }
+
+    override fun onListenerConnected() {
+        super.onListenerConnected()
+        Log.d(TAG, "Listener connected")
+        ListenerStatus.setConnected(applicationContext, true)
+        ListenerStatus.clearPendingInAppPrompt(applicationContext)
+        // 连接成功后顺带拉起保活前台服务
+        KeepAliveService.start(applicationContext)
+    }
+
+    override fun onListenerDisconnected() {
+        super.onListenerDisconnected()
+        Log.w(TAG, "Listener disconnected, will requestRebind")
+        ListenerStatus.setConnected(applicationContext, false)
+        // 延迟重绑，避免系统瞬时抖动时连打 requestRebind
+        mainHandler.postDelayed({
+            try {
+                val cn = ComponentName(
+                    applicationContext,
+                    PaymentNotificationListener::class.java
+                )
+                NotificationListenerService.requestRebind(cn)
+                Log.d(TAG, "requestRebind after disconnect")
+            } catch (e: Exception) {
+                Log.e(TAG, "requestRebind failed", e)
+            }
+        }, 1500L)
+    }
+
+    override fun onDestroy() {
+        ListenerStatus.setConnected(applicationContext, false)
+        scope.cancel()
+        super.onDestroy()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
@@ -103,29 +147,36 @@ class PaymentNotificationListener : NotificationListenerService() {
         Log.d(TAG, "Content: $content")
         Log.d(TAG, "Combined text: $text")
 
+        // 白条 / 花呗 / 借呗 / 金条等信贷支付：不记账
+        if (NotificationParser.isCreditProductPayment(text)) {
+            Log.d(TAG, "Credit product payment, skip: $text")
+            return
+        }
+
         // 判断是否包含收入或支出关键词
         val hasExpenseKeyword = EXPENSE_KEYWORDS.any { text.contains(it) }
         val hasIncomeKeyword = INCOME_KEYWORDS.any { text.contains(it) }
 
         Log.d(TAG, "hasExpenseKeyword=$hasExpenseKeyword, hasIncomeKeyword=$hasIncomeKeyword")
 
-        // 判断是否是监控的App
-        val isMonitoredApp = packageName in MONITORED_PACKAGES || packageName in BANK_PACKAGES
+        val isMonitoredApp = isMonitoredPackage(packageName)
 
-        // 如果不是监控的App，但包含银行关键词，也处理
+        // 正文含银行/动账/支付确认等也处理（覆盖未列入包名的银行 App）
         val isBankRelated = text.contains("银行") || text.contains("工商") || text.contains("邮政") ||
                 text.contains("工行") || text.contains("邮储") || text.contains("建设") ||
                 text.contains("中国银行") || text.contains("农业") || text.contains("招商") ||
-                text.contains("动账通知") || text.contains("交易提醒")
+                text.contains("动账通知") || text.contains("交易提醒") ||
+                text.contains("支付信息确认") || text.contains("储蓄卡") || text.contains("借记卡")
 
         Log.d(TAG, "isMonitoredApp=$isMonitoredApp, isBankRelated=$isBankRelated")
 
-        // 对于监控的App，即使没有明确关键词，只要有金额也尝试解析
-        val hasAmount = text.contains("元") || text.contains("￥") || text.contains("¥")
+        // 金额：含「元」或裸数字金额（通知截断时常无「元」）
+        val hasAmount = text.contains("元") || text.contains("￥") || text.contains("¥") ||
+                Regex("支付\\s*[\\d.]+").containsMatchIn(text) ||
+                Regex("支出\\([^)]*\\)[\\d.]+").containsMatchIn(text)
 
         if (!hasExpenseKeyword && !hasIncomeKeyword) {
             Log.d(TAG, "No keywords found, checking if monitored app with amount...")
-            // 没有关键词，只有监控的App且有金额才继续
             if (!(isMonitoredApp && hasAmount)) {
                 Log.d(TAG, "Not monitored app or no amount, skipping")
                 return
@@ -138,7 +189,10 @@ class PaymentNotificationListener : NotificationListenerService() {
         }
 
         // 过滤明显非交易通知
-        val nonTransactionKeywords = listOf("验证码", "登录", "登录验证", "可用额度", "信用额度", "账单日")
+        val nonTransactionKeywords = listOf(
+            "验证码", "登录", "登录验证", "可用额度", "信用额度", "账单日",
+            "下单关怀", "物流", "配送", "已发货", "待收货", "优惠券"
+        )
         val hasTransactionVerb = EXPENSE_KEYWORDS.any { text.contains(it) } || INCOME_KEYWORDS.any { text.contains(it) }
         if (nonTransactionKeywords.any { text.contains(it) } && !hasTransactionVerb) {
             Log.d(TAG, "Non-transaction notification, skipping")
@@ -150,7 +204,11 @@ class PaymentNotificationListener : NotificationListenerService() {
             Log.d(TAG, "Parse failed for: $title - $content")
             if (isDebugEnabled()) {
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    android.widget.Toast.makeText(applicationContext, "⚠️ 解析失败: ${content.take(30)}...", android.widget.Toast.LENGTH_SHORT).show()
+                    android.widget.Toast.makeText(
+                        applicationContext,
+                        "未能识别：${content.take(28)}",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
             return
@@ -158,11 +216,15 @@ class PaymentNotificationListener : NotificationListenerService() {
 
         Log.d(TAG, "Parsed: amount=${parsed.amount}, merchant=${parsed.merchant}, method=${parsed.paymentMethod}, type=${parsed.type}")
 
-        // 调试模式下弹出提示
+        // 调试模式下弹出提示（文案与主页语气一致）
         if (isDebugEnabled()) {
             android.os.Handler(android.os.Looper.getMainLooper()).post {
-                val emoji = if (parsed.type == "income") "💰" else "💸"
-                android.widget.Toast.makeText(applicationContext, "$emoji ${parsed.type}: ¥${parsed.amount} (${parsed.paymentMethod})", android.widget.Toast.LENGTH_SHORT).show()
+                val typeLabel = if (parsed.type == "income") "收入" else "支出"
+                android.widget.Toast.makeText(
+                    applicationContext,
+                    "$typeLabel ¥${String.format("%.2f", parsed.amount)} · ${parsed.paymentMethod}",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
             }
         }
 
@@ -171,8 +233,15 @@ class PaymentNotificationListener : NotificationListenerService() {
                 val db = AppDatabase.getInstance(applicationContext)
 
                 // ═══ 统一去重（金额转分 + 时间窗）═══
-                val amountCents = (parsed.amount * 100).toLong()
-                val duplicate = DedupHelper.findDuplicate(db.transactionDao(), amountCents, parsed.type, parsed.merchant, postTime)
+                val amountCents = com.smartledger.util.CurrencyUtil.toCents(parsed.amount)
+                val duplicate = DedupHelper.findDuplicate(
+                    db.transactionDao(),
+                    amountCents,
+                    parsed.type,
+                    parsed.merchant,
+                    parsed.paymentMethod,
+                    postTime
+                )
 
                 if (duplicate != null) {
                     Log.d(TAG, "Duplicate: existing=${duplicate.paymentMethod}, new=${parsed.paymentMethod}, amount=${parsed.amount}")
@@ -218,27 +287,15 @@ class PaymentNotificationListener : NotificationListenerService() {
                     Log.e(TAG, "Auto categorize failed", e)
                 }
 
-                // 发系统通知
-                showPaymentNotification(parsed.amount, parsed.merchant, parsed.paymentMethod, parsed.type, id)
-
-                // 尝试弹悬浮窗（在主线程执行）
-                try {
-                    if (android.provider.Settings.canDrawOverlays(applicationContext)) {
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                            FloatingWindowService.show(
-                                context = applicationContext,
-                                amount = parsed.amount,
-                                merchant = parsed.merchant,
-                                paymentMethod = parsed.paymentMethod,
-                                transactionId = id
-                            )
-                        }
-                    } else {
-                        Log.d(TAG, "Overlay permission not granted, skip floating window")
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Floating window failed, notification already shown", e)
-                }
+                // 发系统通知（统一主页风格）
+                com.smartledger.util.NotificationStyle.notifyPaymentDetected(
+                    applicationContext,
+                    parsed.amount,
+                    parsed.merchant,
+                    parsed.paymentMethod,
+                    parsed.type,
+                    id
+                )
 
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to save transaction", e)
@@ -302,50 +359,11 @@ class PaymentNotificationListener : NotificationListenerService() {
         return title to content
     }
 
-    private fun createNotificationChannel() {
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            "收支检测",
-            NotificationManager.IMPORTANCE_HIGH
-        ).apply {
-            description = "检测到收入或支出行为时显示通知"
-            enableVibration(true)
-            setShowBadge(true)
-        }
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(channel)
-    }
-
-    private fun showPaymentNotification(
-        amount: Double,
-        merchant: String?,
-        paymentMethod: String,
-        type: String,
-        transactionId: Long
-    ) {
-        val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            putExtra("openTransactionId", transactionId)
-        }
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val merchantText = if (!merchant.isNullOrBlank()) " · $merchant" else ""
-        val typeText = if (type == "income") "收入" else "支出"
-        val emoji = if (type == "income") "💰" else "💸"
-
-        val notification = Notification.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle("$emoji 检测到$typeText：￥${String.format("%.2f", amount)}")
-            .setContentText("$paymentMethod$merchantText · 点击打开记账")
-            .setContentIntent(pendingIntent)
-            .setAutoCancel(true)
-            .build()
-
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(NOTIFICATION_ID + transactionId.toInt(), notification)
+    private fun isMonitoredPackage(packageName: String): Boolean {
+        if (packageName in MONITORED_PACKAGES || packageName in BANK_PACKAGES) return true
+        if (BANK_PACKAGE_HINTS.any { packageName.contains(it, ignoreCase = true) }) return true
+        if (packageName.contains("jd.jr") || packageName.contains("jingdong")) return true
+        return false
     }
 
     private fun isDebugEnabled(): Boolean {

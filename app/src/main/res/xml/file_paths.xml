@@ -3,4 +3,10 @@
     <external-path
         name="documents"
         path="Documents/SmartLedger/" />
+    <external-files-path
+        name="app_documents"
+        path="Documents/SmartLedger/" />
+    <files-path
+        name="internal_backup"
+        path="SmartLedger/" />
 </paths>

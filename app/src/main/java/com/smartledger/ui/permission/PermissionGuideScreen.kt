@@ -41,6 +41,15 @@ fun PermissionGuideScreen(
     var smsPermissionGranted by remember { mutableStateOf(
         androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECEIVE_SMS) == android.content.pm.PackageManager.PERMISSION_GRANTED
     ) }
+    var postNotificationsGranted by remember {
+        mutableStateOf(isPostNotificationsGranted(context))
+    }
+
+    val postNotificationLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        postNotificationsGranted = granted
+    }
 
     // 每次页面恢复时自动刷新权限状态
     DisposableEffect(lifecycleOwner) {
@@ -50,6 +59,7 @@ fun PermissionGuideScreen(
                 canDrawOverlays = Settings.canDrawOverlays(context)
                 batteryOptimized = isBatteryOptimizationIgnored(context)
                 smsPermissionGranted = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECEIVE_SMS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                postNotificationsGranted = isPostNotificationsGranted(context)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -80,7 +90,20 @@ fun PermissionGuideScreen(
                     modifier = Modifier.padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text("🎉", fontSize = 36.sp)
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(SmartLedgerColors.accent),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Default.Notifications,
+                            contentDescription = null,
+                            tint = androidx.compose.ui.graphics.Color.White,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
                         text = "欢迎使用智能记账",
@@ -90,7 +113,7 @@ fun PermissionGuideScreen(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "自动检测微信、支付宝、云闪付的支付行为\n轻松记录每一笔开支",
+                        text = "自动识别微信、支付宝、云闪付支付\n静默记入账单，风格与主页一致",
                         style = MaterialTheme.typography.bodyMedium,
                         textAlign = TextAlign.Center,
                         color = SmartLedgerColors.fgSecondary
@@ -109,16 +132,28 @@ fun PermissionGuideScreen(
             // 4 项权限
             PermissionItem(
                 icon = Icons.Default.Notifications,
-                title = "通知使用权",
+                title = "通知使用权（必须）",
                 description = "允许读取支付通知，自动识别交易",
                 isGranted = notificationListenerEnabled,
                 onClick = { openNotificationListenerSettings(context) }
             )
 
             PermissionItem(
+                icon = Icons.Default.Notifications,
+                title = "发送通知（推荐）",
+                description = "显示「检测到支出」与后台保活通知",
+                isGranted = postNotificationsGranted,
+                onClick = {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                        postNotificationLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }
+            )
+
+            PermissionItem(
                 icon = Icons.Default.Layers,
-                title = "悬浮窗权限",
-                description = "允许弹出支付确认窗口",
+                title = "悬浮窗权限（可选）",
+                description = "允许弹出支付确认窗口；不开启仍可自动记账",
                 isGranted = canDrawOverlays,
                 onClick = { openOverlaySettings(context) }
             )
@@ -149,7 +184,7 @@ fun PermissionGuideScreen(
 
             Spacer(modifier = Modifier.weight(1f))
 
-            // 完成按钮
+            // 完成按钮：仅要求通知使用权（悬浮窗可选）
             Button(
                 onClick = onComplete,
                 modifier = Modifier
@@ -157,7 +192,7 @@ fun PermissionGuideScreen(
                     .height(50.dp),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = SmartLedgerColors.accent),
-                enabled = notificationListenerEnabled && canDrawOverlays
+                enabled = notificationListenerEnabled
             ) {
                 Text(
                     "完成设置，开始使用",
@@ -167,7 +202,7 @@ fun PermissionGuideScreen(
             }
 
             // 跳过
-            if (!notificationListenerEnabled || !canDrawOverlays) {
+            if (!notificationListenerEnabled) {
                 TextButton(
                     onClick = onComplete,
                     modifier = Modifier.fillMaxWidth()
@@ -258,9 +293,15 @@ private fun PermissionItem(
 // ═══ 权限检测函数 ═══
 
 private fun isNotificationListenerEnabled(context: Context): Boolean {
-    val flat = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
-    if (flat.isNullOrEmpty()) return false
-    return flat.contains("PaymentNotificationListener")
+    return com.smartledger.service.ListenerStatus.isEnabledInSettings(context)
+}
+
+private fun isPostNotificationsGranted(context: Context): Boolean {
+    if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return true
+    return androidx.core.content.ContextCompat.checkSelfPermission(
+        context,
+        android.Manifest.permission.POST_NOTIFICATIONS
+    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
 }
 
 private fun isBatteryOptimizationIgnored(context: Context): Boolean {

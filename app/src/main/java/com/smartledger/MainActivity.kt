@@ -40,14 +40,34 @@ import android.widget.Toast
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+
+    /** 通知点击深链：支持 onNewIntent 热启动 */
+    var deepLinkTransactionId by mutableStateOf(-1L)
+        private set
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        deepLinkTransactionId = intent?.getLongExtra("openTransactionId", -1) ?: -1
 
         // 初始化主题模式
         val prefs = getSharedPreferences("smart_ledger", MODE_PRIVATE)
         val savedTheme = prefs.getString("theme_mode", "SYSTEM")
-        ThemeManager.init(ThemeMode.valueOf(savedTheme ?: "SYSTEM"))
+        ThemeManager.init(
+            try {
+                ThemeMode.valueOf(savedTheme ?: "SYSTEM")
+            } catch (_: Exception) {
+                ThemeMode.SYSTEM
+            }
+        )
+
+        // 启动保活 + 若监听已授权但 binder 断开则 requestRebind
+        try {
+            com.smartledger.service.KeepAliveService.start(this)
+            com.smartledger.service.ListenerStatus.requestRebindIfNeeded(this)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
 
         // 注册自动备份（如果已开启）
         val autoBackupEnabled = prefs.getBoolean("auto_backup", true)
@@ -60,6 +80,17 @@ class MainActivity : ComponentActivity() {
                 MainApp()
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        deepLinkTransactionId = intent.getLongExtra("openTransactionId", -1)
+    }
+
+    fun clearDeepLink() {
+        deepLinkTransactionId = -1L
+        intent?.removeExtra("openTransactionId")
     }
 }
 
@@ -112,25 +143,77 @@ fun MainApp() {
     }
 
     // 权限状态（每次 resume 时刷新）
-    var notificationListenerEnabled by remember { mutableStateOf(isNotificationListenerEnabled(context)) }
+    var notificationListenerEnabled by remember {
+        mutableStateOf(com.smartledger.service.ListenerStatus.isEnabledInSettings(context))
+    }
     var canDrawOverlays by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     var showPermissionWarning by remember { mutableStateOf(false) }
+    var showUpdateNlsPrompt by remember {
+        mutableStateOf(com.smartledger.service.ListenerStatus.shouldPromptAfterUpdate(context))
+    }
+    var showReconnectFailed by remember { mutableStateOf(false) }
+    var permissionWarnedThisSession by remember { mutableStateOf(false) }
+    // 触发一次「静默重绑后复查」
+    var pendingReconnectCheck by remember { mutableStateOf(false) }
 
-    // 监听生命周期，每次回到前台时检查权限
+    // 监听生命周期，每次回到前台时检查权限并尝试重绑
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.lifecycle.addObserver(object : androidx.lifecycle.DefaultLifecycleObserver {
             override fun onResume(owner: androidx.lifecycle.LifecycleOwner) {
-                val newNotification = isNotificationListenerEnabled(context)
+                val enabled = com.smartledger.service.ListenerStatus.isEnabledInSettings(context)
+                val connected = com.smartledger.service.ListenerStatus.isConnected(context)
                 val newOverlay = Settings.canDrawOverlays(context)
-                notificationListenerEnabled = newNotification
+                notificationListenerEnabled = enabled
                 canDrawOverlays = newOverlay
-                // 权限失效时显示警告
-                if (!newNotification) {
-                    showPermissionWarning = true
+                // 后台巡检留下的标记：打开软件再弹应用内提示（不发系统通知）
+                val pendingPrompt =
+                    com.smartledger.service.ListenerStatus.consumePendingInAppPrompt(context)
+
+                if (!enabled) {
+                    pendingReconnectCheck = false
+                    if (com.smartledger.service.ListenerStatus.shouldPromptAfterUpdate(context)) {
+                        // 覆盖安装后系统强制撤销：必须提示重新开启（仅此一次）
+                        showUpdateNlsPrompt = true
+                    } else if (!isFirstLaunch &&
+                        (!permissionWarnedThisSession ||
+                            pendingPrompt == com.smartledger.service.ListenerStatus.PROMPT_DISABLED)
+                    ) {
+                        showPermissionWarning = true
+                        permissionWarnedThisSession = true
+                    }
+                } else {
+                    com.smartledger.service.ListenerStatus.clearAfterUpdatePrompt(context)
+                    showUpdateNlsPrompt = false
+                    if (!connected ||
+                        pendingPrompt == com.smartledger.service.ListenerStatus.PROMPT_RECONNECT
+                    ) {
+                        // 设置仍开着但 binder 断了：静默重绑，仍失败再弹窗
+                        com.smartledger.service.ListenerStatus.requestRebind(context, force = true)
+                        com.smartledger.service.KeepAliveService.start(context)
+                        pendingReconnectCheck = true
+                    } else {
+                        pendingReconnectCheck = false
+                    }
                 }
             }
         })
+    }
+
+    // 静默重绑后复查：连上则不打扰；仍断则引导「关掉再开」通知使用权
+    LaunchedEffect(pendingReconnectCheck) {
+        if (!pendingReconnectCheck) return@LaunchedEffect
+        kotlinx.coroutines.delay(3000)
+        pendingReconnectCheck = false
+        if (!com.smartledger.service.ListenerStatus.isEnabledInSettings(context)) {
+            showPermissionWarning = true
+        } else if (!com.smartledger.service.ListenerStatus.isConnected(context)) {
+            com.smartledger.service.ListenerStatus.requestRebindIfNeeded(context)
+            kotlinx.coroutines.delay(2000)
+            if (!com.smartledger.service.ListenerStatus.isConnected(context)) {
+                showReconnectFailed = true
+            }
+        }
     }
 
     // 首次启动且权限未开启，跳转到权限引导
@@ -157,14 +240,12 @@ fun MainApp() {
         }
     }
 
-    // 通知深链：读取 openTransactionId
-    val activity = context as? ComponentActivity
-    val openTransactionId = activity?.intent?.getLongExtra("openTransactionId", -1) ?: -1
+    // 通知深链：冷启动 + 热启动（onNewIntent）均可
+    val activity = context as? MainActivity
+    val openTransactionId = activity?.deepLinkTransactionId ?: -1L
     LaunchedEffect(openTransactionId) {
         if (openTransactionId > 0) {
-            // 清除 extra 避免重复触发
-            activity?.intent?.removeExtra("openTransactionId")
-            // 导航到首页（交易记录在首页可见）
+            activity?.clearDeepLink()
             navController.navigate(Screen.Home.route) {
                 popUpTo(Screen.Home.route) { inclusive = true }
             }
@@ -360,13 +441,37 @@ fun MainApp() {
         )
     }
 
-    // ═══ 权限失效警告弹窗 ═══
-    if (showPermissionWarning) {
+    // ═══ 覆盖安装后：系统强制撤销通知使用权（无法自动恢复）═══
+    if (showUpdateNlsPrompt && !isFirstLaunch) {
+        SmartLedgerDialog(
+            onDismissRequest = {
+                showUpdateNlsPrompt = false
+                com.smartledger.service.ListenerStatus.clearAfterUpdatePrompt(context)
+            },
+            iconTint = SmartLedgerColors.accent,
+            title = "更新后需重新开启通知权限",
+            text = "这是 Android 系统安全限制：每次安装或更新应用后，都会自动关闭通知使用权，应用无法替你静默打开。\n\n日常使用中若监听断开，应用会自动尝试重连；仅更新后需要你重新开启一次。",
+            confirmText = "去开启",
+            onConfirm = {
+                showUpdateNlsPrompt = false
+                com.smartledger.service.ListenerStatus.clearAfterUpdatePrompt(context)
+                navController.navigate("permission")
+            },
+            dismissText = "稍后再说",
+            onDismiss = {
+                showUpdateNlsPrompt = false
+                com.smartledger.service.ListenerStatus.clearAfterUpdatePrompt(context)
+            }
+        )
+    }
+
+    // ═══ 权限未开启（非更新场景）═══
+    if (showPermissionWarning && !showUpdateNlsPrompt) {
         SmartLedgerDialog(
             onDismissRequest = { showPermissionWarning = false },
             iconTint = SmartLedgerColors.expense,
-            title = "通知监听权限已失效",
-            text = "重新编译安装后权限会被撤销。\n\n开启权限后才能自动识别微信、支付宝、银行卡的支付通知。",
+            title = "通知使用权未开启",
+            text = "开启后才能自动识别微信、支付宝、银行卡的支付通知。\n\n若设置里已开启但仍不记账，请关掉再打开一次「智能记账」的通知使用权。",
             confirmText = "去开启",
             onConfirm = {
                 showPermissionWarning = false
@@ -377,13 +482,33 @@ fun MainApp() {
         )
     }
 
+    // ═══ 监听断连且自动恢复失败 ═══
+    if (showReconnectFailed && !showPermissionWarning && !showUpdateNlsPrompt) {
+        SmartLedgerDialog(
+            onDismissRequest = { showReconnectFailed = false },
+            iconTint = SmartLedgerColors.expense,
+            title = "支付监听连接已断开",
+            text = "通知权限仍在，但系统已断开监听连接（省电杀后台后常见）。应用已自动尝试重连仍未成功。\n\n请到「通知使用权」里关掉再打开本应用，即可恢复。",
+            confirmText = "去修复",
+            onConfirm = {
+                showReconnectFailed = false
+                navController.navigate("permission")
+            },
+            dismissText = "稍后再说",
+            onDismiss = { showReconnectFailed = false }
+        )
+    }
+
     // ═══ 检查更新弹窗 ═══
     updateInfo?.let { info ->
         SmartLedgerDialog(
             onDismissRequest = { updateInfo = null },
             iconTint = SmartLedgerColors.accent,
             title = "发现新版本 ${info.versionName}",
-            text = if (info.releaseNotes.isNotBlank()) info.releaseNotes.take(200) else "有新版本可用，建议更新。",
+            text = if (info.releaseNotes.isNotBlank()) {
+                val notes = info.releaseNotes.take(500)
+                if (info.releaseNotes.length > 500) "$notes\n..." else notes
+            } else "有新版本可用，建议更新。",
             confirmText = "立即更新",
             onConfirm = {
                 com.smartledger.util.UpdateChecker.openDownloadPage(context, info)
@@ -425,7 +550,5 @@ fun MainApp() {
 }
 
 private fun isNotificationListenerEnabled(context: Context): Boolean {
-    val flat = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
-    if (flat.isNullOrEmpty()) return false
-    return flat.contains("PaymentNotificationListener")
+    return com.smartledger.service.ListenerStatus.isEnabledInSettings(context)
 }

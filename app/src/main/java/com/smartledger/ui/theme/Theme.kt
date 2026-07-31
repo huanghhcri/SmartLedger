@@ -187,13 +187,13 @@ fun SmartLedgerTheme(
         chartColors = listOf(DarkChartGray1, DarkChartGray2, DarkChartGray3, DarkChartGray4, DarkChartGray5, DarkChartGray6)
     ) else ExtendedColors()
 
-    // 状态栏颜色
+    // 状态栏颜色（仅 Activity 场景；悬浮窗等非 Activity Context 不可强转）
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
-            val window = (view.context as Activity).window
-            window.statusBarColor = extendedColors.background.toArgb()
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !isDark
+            val activity = view.context as? Activity ?: return@SideEffect
+            activity.window.statusBarColor = extendedColors.background.toArgb()
+            WindowCompat.getInsetsController(activity.window, view).isAppearanceLightStatusBars = !isDark
         }
     }
 

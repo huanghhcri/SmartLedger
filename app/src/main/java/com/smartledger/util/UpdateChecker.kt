@@ -54,7 +54,7 @@ object UpdateChecker {
 
             val json = JSONObject(body)
             val tagName = json.getString("tag_name")           // e.g. "v1.0.3"
-            val releaseNotes = json.optString("body", "")       // 发布说明
+            val releaseNotes = stripMarkdown(json.optString("body", ""))  // 去掉 Markdown 格式
             val htmlUrl = json.getString("html_url")            // Release 页面
 
             // 查找 APK 下载链接
@@ -88,6 +88,27 @@ object UpdateChecker {
             Log.e(TAG, "Check update failed", e)
             null
         }
+    }
+
+    /**
+     * 去掉 Markdown 格式，保留纯文本
+     */
+    private fun stripMarkdown(md: String): String {
+        return md
+            .replace(Regex("^#{1,6}\\s+", RegexOption.MULTILINE), "")
+            .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")
+            .replace(Regex("\\*(.+?)\\*"), "$1")
+            .replace(Regex("~~(.+?)~~"), "$1")
+            .replace(Regex("`(.+?)`"), "$1")
+            .replace(Regex("```[\\s\\S]*?```"), "")
+            .replace(Regex("!\\[.*?]\\(.*?\\)"), "")
+            .replace(Regex("\\[(.+?)]\\(.*?\\)"), "$1")
+            .replace(Regex("^[-*+]\\s+", RegexOption.MULTILINE), "• ")
+            .replace(Regex("^\\d+\\.\\s+", RegexOption.MULTILINE), "")
+            .replace(Regex("^>\\s*", RegexOption.MULTILINE), "")
+            .replace(Regex("---+"), "")
+            .replace(Regex("\\n{3,}"), "\n\n")
+            .trim()
     }
 
     /**

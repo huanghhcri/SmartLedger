@@ -1,0 +1,184 @@
+package com.smartledger.util
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import com.smartledger.MainActivity
+import com.smartledger.R
+
+/**
+ * 系统通知统一样式：与主页暖白 Linear / 紫色强调色一致。
+ * 文案克制、无表情堆砌；小图标用应用矢量；color 用 accent。
+ */
+object NotificationStyle {
+
+    const val CHANNEL_PAYMENT = "payment_detected"
+    const val CHANNEL_KEEP_ALIVE = "keep_alive"
+    const val CHANNEL_FLOATING = "floating_window_channel"
+
+    private const val ID_PAYMENT_BASE = 2001
+    const val ID_KEEP_ALIVE = 1002
+    const val ID_FLOATING = 1001
+
+    fun ensureChannels(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+
+        manager.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_PAYMENT,
+                "收支检测",
+                NotificationManager.IMPORTANCE_DEFAULT
+            ).apply {
+                description = "自动记账成功后的提醒"
+                enableVibration(false)
+                setShowBadge(true)
+                lightColor = ContextCompat.getColor(context, R.color.accent)
+            }
+        )
+
+        manager.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_KEEP_ALIVE,
+                "后台自动记账",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "保持支付监听，可在系统设置中隐藏"
+                setShowBadge(false)
+            }
+        )
+
+        manager.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_FLOATING,
+                "支付确认",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "支付确认相关前台服务"
+                setShowBadge(false)
+            }
+        )
+    }
+
+    fun accentColor(context: Context): Int =
+        ContextCompat.getColor(context, R.color.accent)
+
+    fun openAppPendingIntent(
+        context: Context,
+        requestCode: Int = 0,
+        transactionId: Long? = null
+    ): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            if (transactionId != null && transactionId > 0) {
+                putExtra("openTransactionId", transactionId)
+            }
+        }
+        return PendingIntent.getActivity(
+            context,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    /**
+     * 自动记账成功通知
+     */
+    fun buildPaymentDetected(
+        context: Context,
+        amount: Double,
+        merchant: String?,
+        paymentMethod: String,
+        type: String,
+        transactionId: Long
+    ): Notification {
+        ensureChannels(context)
+        val isIncome = type == "income"
+        val typeLabel = if (isIncome) "收入" else "支出"
+        val amountText = "¥${String.format("%.2f", amount)}"
+        val detail = buildString {
+            append(paymentMethod.ifBlank { "自动记账" })
+            if (!merchant.isNullOrBlank()) {
+                append(" · ")
+                append(merchant)
+            }
+        }
+
+        return NotificationCompat.Builder(context, CHANNEL_PAYMENT)
+            .setSmallIcon(R.drawable.ic_stat_notification)
+            .setColor(accentColor(context))
+            .setContentTitle("$typeLabel  $amountText")
+            .setContentText(detail)
+            .setSubText("智能记账")
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText("$detail\n已记入账单，点击查看详情")
+                    .setBigContentTitle("$typeLabel  $amountText")
+                    .setSummaryText("智能记账")
+            )
+            .setContentIntent(openAppPendingIntent(context, transactionId.toInt(), transactionId))
+            .setAutoCancel(true)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+    }
+
+    fun notifyPaymentDetected(
+        context: Context,
+        amount: Double,
+        merchant: String?,
+        paymentMethod: String,
+        type: String,
+        transactionId: Long
+    ) {
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        val notification = buildPaymentDetected(
+            context, amount, merchant, paymentMethod, type, transactionId
+        )
+        manager.notify(ID_PAYMENT_BASE + (transactionId % 100000).toInt(), notification)
+    }
+
+    /**
+     * 保活前台通知（低调、与主页语气一致）
+     */
+    fun buildKeepAlive(context: Context, connected: Boolean): Notification {
+        ensureChannels(context)
+        val text = if (connected) {
+            "正在自动记录微信 / 支付宝支付"
+        } else {
+            "监听已断开，正在尝试恢复"
+        }
+        return NotificationCompat.Builder(context, CHANNEL_KEEP_ALIVE)
+            .setSmallIcon(R.drawable.ic_stat_notification)
+            .setColor(accentColor(context))
+            .setContentTitle("智能记账")
+            .setContentText(text)
+            .setContentIntent(openAppPendingIntent(context, ID_KEEP_ALIVE))
+            .setOngoing(true)
+            .setSilent(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
+    }
+
+    fun buildForegroundPlaceholder(context: Context, text: String): Notification {
+        ensureChannels(context)
+        return NotificationCompat.Builder(context, CHANNEL_FLOATING)
+            .setSmallIcon(R.drawable.ic_stat_notification)
+            .setColor(accentColor(context))
+            .setContentTitle("智能记账")
+            .setContentText(text)
+            .setContentIntent(openAppPendingIntent(context, ID_FLOATING))
+            .setOngoing(true)
+            .setSilent(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
+    }
+}

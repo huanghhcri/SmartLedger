@@ -1,9 +1,5 @@
 package com.smartledger.service
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -14,19 +10,14 @@ import android.util.Log
 import android.view.Gravity
 import android.view.WindowManager
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -34,28 +25,25 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
-import com.smartledger.MainActivity
-import com.smartledger.R
 import com.smartledger.data.db.AppDatabase
-import com.smartledger.data.db.entity.Transaction
-import com.smartledger.data.db.entity.Category
 import com.smartledger.ui.theme.SmartLedgerTheme
 import com.smartledger.util.CurrencyUtil
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
-class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner {
+class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner, ViewModelStoreOwner {
 
     companion object {
         private const val TAG = "FloatingWindow"
-        private const val CHANNEL_ID = "floating_window_channel"
-        private const val NOTIFICATION_ID = 1001
 
         const val EXTRA_AMOUNT = "extra_amount"
         const val EXTRA_MERCHANT = "extra_merchant"
@@ -81,33 +69,56 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
     private var floatingView: ComposeView? = null
     private val lifecycleRegistry = LifecycleRegistry(this)
     private val savedStateRegistryController = SavedStateRegistryController.create(this)
+    private val store = ViewModelStore()
     private val scope = CoroutineScope(Dispatchers.Main)
 
     override val lifecycle: Lifecycle get() = lifecycleRegistry
     override val savedStateRegistry: SavedStateRegistry
         get() = savedStateRegistryController.savedStateRegistry
+    override val viewModelStore: ViewModelStore get() = store
 
     override fun onCreate() {
         super.onCreate()
         savedStateRegistryController.performRestore(null)
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        createNotificationChannel()
+        com.smartledger.util.NotificationStyle.ensureChannels(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIFICATION_ID, createNotification())
+        val fgNotification = com.smartledger.util.NotificationStyle.buildForegroundPlaceholder(
+            this,
+            "正在处理…"
+        )
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    com.smartledger.util.NotificationStyle.ID_FLOATING,
+                    fgNotification,
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                )
+            } else {
+                startForeground(com.smartledger.util.NotificationStyle.ID_FLOATING, fgNotification)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "startForeground failed", e)
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         val amount = intent?.getDoubleExtra(EXTRA_AMOUNT, 0.0) ?: 0.0
         val merchant = intent?.getStringExtra(EXTRA_MERCHANT)
         val paymentMethod = intent?.getStringExtra(EXTRA_PAYMENT_METHOD) ?: "未知"
         val transactionId = intent?.getLongExtra(EXTRA_TRANSACTION_ID, -1) ?: -1
 
+        // Compose 悬浮窗需要 RESUMED，否则首次绘制易白屏/崩溃
+        lifecycleRegistry.currentState = Lifecycle.State.STARTED
+        lifecycleRegistry.currentState = Lifecycle.State.RESUMED
+
         if (amount > 0) {
             showFloatingWindow(amount, merchant, paymentMethod, transactionId)
         }
 
-        lifecycleRegistry.currentState = Lifecycle.State.STARTED
         return START_NOT_STICKY
     }
 
@@ -138,6 +149,7 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
             val composeView = ComposeView(this).apply {
                 setViewTreeLifecycleOwner(this@FloatingWindowService)
                 setViewTreeSavedStateRegistryOwner(this@FloatingWindowService)
+                setViewTreeViewModelStoreOwner(this@FloatingWindowService)
                 setContent {
                     SmartLedgerTheme {
                         FloatingPaymentDialog(
@@ -205,51 +217,19 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
         floatingView = null
     }
 
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "支付确认悬浮窗",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "显示支付确认悬浮窗"
-            }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
-        }
-    }
-
-    private fun createNotification(): Notification {
-        val intent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(this, CHANNEL_ID)
-                .setContentTitle("智能记账")
-                .setContentText("正在处理支付确认...")
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentIntent(pendingIntent)
-                .build()
-        } else {
-            @Suppress("DEPRECATION")
-            Notification.Builder(this)
-                .setContentTitle("智能记账")
-                .setContentText("正在处理支付确认...")
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentIntent(pendingIntent)
-                .build()
-        }
-    }
-
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
         Log.d(TAG, "Service destroying")
-        lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         dismissFloatingWindow()
+        try {
+            if (lifecycleRegistry.currentState.isAtLeast(Lifecycle.State.CREATED)) {
+                lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Lifecycle destroy failed", e)
+        }
+        store.clear()
         super.onDestroy()
     }
 }
@@ -263,100 +243,97 @@ private fun FloatingPaymentDialog(
     onIgnore: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    var selectedCategory by remember { mutableStateOf<String?>(null) }
-
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 8.dp),
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)
+        colors = CardDefaults.cardColors(containerColor = com.smartledger.ui.theme.SmartLedgerColors.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
     ) {
         Column(
             modifier = Modifier.padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // 顶部图标
             Box(
                 modifier = Modifier
                     .size(48.dp)
                     .background(
-                        MaterialTheme.colorScheme.primaryContainer,
+                        com.smartledger.ui.theme.SmartLedgerColors.accentDim,
                         RoundedCornerShape(14.dp)
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                Text("💰", fontSize = 24.sp)
+                Icon(
+                    Icons.Default.Check,
+                    contentDescription = null,
+                    tint = com.smartledger.ui.theme.SmartLedgerColors.accent,
+                    modifier = Modifier.size(26.dp)
+                )
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
             Text(
-                text = "检测到支付",
+                text = "检测到支出",
                 style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                color = com.smartledger.ui.theme.SmartLedgerColors.fg
             )
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // 金额
             Text(
-                text = "￥${CurrencyUtil.format(amount)}",
-                fontSize = 36.sp,
+                text = "¥${CurrencyUtil.format(amount)}",
+                fontSize = 34.sp,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.error
+                fontFamily = androidx.compose.ui.text.font.FontFamily.SansSerif,
+                color = com.smartledger.ui.theme.SmartLedgerColors.expense
             )
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // 商户和支付方式
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (!merchant.isNullOrBlank()) {
                     Text(
                         text = merchant,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = com.smartledger.ui.theme.SmartLedgerColors.fgSecondary
                     )
                 }
                 Text(
                     text = paymentMethod,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary
+                    color = com.smartledger.ui.theme.SmartLedgerColors.accent
                 )
             }
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            // 按钮行
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // 忽略按钮
                 OutlinedButton(
                     onClick = onIgnore,
                     modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = com.smartledger.ui.theme.SmartLedgerColors.fgSecondary
+                    )
                 ) {
-                    Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
                     Text("忽略")
                 }
 
-                // 确认记账按钮
                 Button(
                     onClick = onConfirm,
                     modifier = Modifier.weight(1.5f),
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = com.smartledger.ui.theme.SmartLedgerColors.accent
+                    )
                 ) {
-                    Text("⚠", modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("记这笔", fontWeight = FontWeight.Bold)
+                    Text("记这笔", fontWeight = FontWeight.SemiBold)
                 }
             }
         }

@@ -40,6 +40,17 @@ fun StatisticsScreen(viewModel: StatisticsViewModel = viewModel()) {
     val expenseByCategory by viewModel.expenseByCategory.collectAsState(initial = emptyList())
     val categories by viewModel.categories.collectAsState(initial = emptyList())
 
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = object : androidx.lifecycle.DefaultLifecycleObserver {
+            override fun onResume(owner: androidx.lifecycle.LifecycleOwner) {
+                viewModel.refreshTimeRange()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     val categoryMap = categories.associateBy { it.id }
 
     // 灰度图表色系

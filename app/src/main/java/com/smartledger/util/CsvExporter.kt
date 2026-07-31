@@ -75,13 +75,7 @@ object CsvExporter {
         categoryMap: Map<Long, Category>,
         fileName: String
     ): Uri? = withContext(Dispatchers.IO) {
-        val exportDir = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
-            "SmartLedger"
-        )
-        if (!exportDir.exists()) exportDir.mkdirs()
-
-        val file = File(exportDir, fileName)
+        val file = resolveWritableFile(context, fileName) ?: return@withContext null
         FileWriter(file).use { writer ->
             writer.write("\uFEFF")
             writer.write("日期,时间,类型,金额,分类,商户,支付方式,备注,来源\n")
@@ -104,6 +98,30 @@ object CsvExporter {
 
         val authority = "${context.packageName}.fileprovider"
         FileProvider.getUriForFile(context, authority, file)
+    }
+
+    /** 优先公共 Documents；失败则回退应用专属目录（Android 10+ 更稳） */
+    private fun resolveWritableFile(context: Context, fileName: String): File? {
+        val candidates = listOf(
+            File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+                "SmartLedger"
+            ),
+            File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "SmartLedger"),
+            File(context.filesDir, "SmartLedger")
+        )
+        for (dir in candidates) {
+            try {
+                if (!dir.exists()) dir.mkdirs()
+                val file = File(dir, fileName)
+                // 探测可写
+                FileWriter(file, true).use { }
+                return file
+            } catch (_: Exception) {
+                // try next
+            }
+        }
+        return null
     }
 
     private fun escapeCsv(value: String): String {

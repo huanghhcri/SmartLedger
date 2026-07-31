@@ -90,11 +90,13 @@ fun SmartLedgerDialog(
             }
         },
         dismissButton = {
-            TextButton(
-                onClick = { onDismiss?.invoke() ?: onDismissRequest() },
-                shape = RoundedCornerShape(10.dp)
-            ) {
-                Text(dismissText, color = SmartLedgerColors.fgSecondary)
+            if (dismissText.isNotBlank()) {
+                TextButton(
+                    onClick = { onDismiss?.invoke() ?: onDismissRequest() },
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text(dismissText, color = SmartLedgerColors.fgSecondary)
+                }
             }
         }
     )

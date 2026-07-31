@@ -262,59 +262,54 @@ private fun AddCategoryDialog(
     val colors = listOf(0xFFD94848, 0xFF3E63DD, 0xFF2D9D63, 0xFF9C27B0, 0xFFFF7043, 0xFF795548)
     var selectedColor by remember { mutableStateOf(colors[0]) }
 
-    AlertDialog(
+    com.smartledger.ui.components.SmartLedgerDialog(
         onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(20.dp),
-        containerColor = SmartLedgerColors.surface,
-        titleContentColor = SmartLedgerColors.fg,
-        title = {
-            Text("添加${if (type == "expense") "支出" else "收入"}分类", fontWeight = FontWeight.Bold)
+        title = "添加${if (type == "expense") "支出" else "收入"}分类",
+        confirmText = "添加",
+        onConfirm = {
+            if (name.isNotBlank()) onAdd(name, selectedColor)
         },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("分类名称") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = SmartLedgerColors.accent,
-                        focusedLabelColor = SmartLedgerColors.accent,
-                        cursorColor = SmartLedgerColors.accent
-                    )
+        dismissText = "取消",
+        onDismiss = onDismiss,
+        content = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("分类名称") },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = SmartLedgerColors.accent,
+                    focusedLabelColor = SmartLedgerColors.accent,
+                    cursorColor = SmartLedgerColors.accent
                 )
-                Spacer(modifier = Modifier.height(16.dp))
-                Text("选择颜色", style = MaterialTheme.typography.labelMedium, color = SmartLedgerColors.fgSecondary)
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    colors.forEach { color ->
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .background(Color(color), RoundedCornerShape(8.dp))
-                                .clickable { selectedColor = color }
-                                .then(
-                                    if (selectedColor == color)
-                                        Modifier.padding(2.dp)
-                                    else Modifier
-                                )
-                        )
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("选择颜色", style = MaterialTheme.typography.labelMedium, color = SmartLedgerColors.fgSecondary)
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                colors.forEach { color ->
+                    val selected = selectedColor == color
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .background(Color(color), RoundedCornerShape(10.dp))
+                            .clickable { selectedColor = color }
+                    ) {
+                        if (selected) {
+                            Box(
+                                modifier = Modifier
+                                    .matchParentSize()
+                                    .padding(2.dp)
+                                    .background(Color.Transparent, RoundedCornerShape(8.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("✓", color = Color.White, fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 }
             }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    if (name.isNotBlank()) onAdd(name, selectedColor)
-                },
-                shape = RoundedCornerShape(10.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = SmartLedgerColors.accent)
-            ) { Text("添加", fontWeight = FontWeight.SemiBold) }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消", color = SmartLedgerColors.fgSecondary) }
         }
     )
 }

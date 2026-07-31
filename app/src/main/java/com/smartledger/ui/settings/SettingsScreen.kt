@@ -185,13 +185,7 @@ fun SettingsScreen(
                         MenuSettingItem(
                             icon = Icons.Outlined.Notifications,
                             label = "通知使用权",
-                            onClick = {
-                                try {
-                                    context.startActivity(android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).apply {
-                                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    })
-                                } catch (_: Exception) {}
-                            }
+                            onClick = { openNotificationListenerSettings(context) }
                         )
                         DividerLine()
                         MenuSettingItem(
@@ -222,7 +216,58 @@ fun SettingsScreen(
                 }
             }
 
-            item { Spacer(modifier = Modifier.height(20.dp)) }
+            // 自动记账故障提示
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 10.dp)
+                        .clickable { openNotificationListenerSettings(context) },
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = SmartLedgerColors.accentDim)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Icon(
+                            Icons.Outlined.Info,
+                            contentDescription = null,
+                            tint = SmartLedgerColors.accent,
+                            modifier = Modifier
+                                .padding(top = 2.dp)
+                                .size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "没有自动记账？",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = SmartLedgerColors.fg
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "1. 安装或更新 App 后：系统会强制关闭通知使用权，需重新开启一次（Android 限制，无法跳过）。\n" +
+                                    "2. 日常杀后台导致断开：应用会自动尝试重连；若仍无效，请关掉再打开「智能记账」的通知使用权。\n" +
+                                    "3. 建议同时关闭电池优化、锁定后台，减少被系统杀掉。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = SmartLedgerColors.fgSecondary,
+                                lineHeight = 20.sp
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = "点此去开启 / 开关通知使用权 →",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Medium,
+                                color = SmartLedgerColors.accent
+                            )
+                        }
+                    }
+                }
+            }
+
+            item { Spacer(modifier = Modifier.height(12.dp)) }
 
             // ═══ 关于 ═══
             item {
@@ -287,7 +332,10 @@ fun SettingsScreen(
             onDismissRequest = { updateResult = null },
             iconTint = SmartLedgerColors.accent,
             title = "发现新版本 ${info.versionName}",
-            text = if (info.releaseNotes.isNotBlank()) info.releaseNotes.take(300) else "有新版本可用，建议更新。",
+            text = if (info.releaseNotes.isNotBlank()) {
+                val notes = info.releaseNotes.take(500)
+                if (info.releaseNotes.length > 500) "$notes\n..." else notes
+            } else "有新版本可用，建议更新。",
             confirmText = "立即更新",
             onConfirm = {
                 com.smartledger.util.UpdateChecker.openDownloadPage(context, info)
@@ -415,4 +463,23 @@ private fun DividerLine() {
         color = SmartLedgerColors.border,
         thickness = 0.5.dp
     )
+}
+
+private fun openNotificationListenerSettings(context: Context) {
+    try {
+        context.startActivity(
+            Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        )
+    } catch (_: Exception) {
+        try {
+            context.startActivity(
+                Intent(android.provider.Settings.ACTION_SETTINGS).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            )
+        } catch (_: Exception) {
+        }
+    }
 }

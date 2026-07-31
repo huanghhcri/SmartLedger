@@ -47,9 +47,14 @@ data class BackupInfo(
 
 class BackupViewModel(application: Application) : AndroidViewModel(application) {
     private val context = application
-    private val backupDir = File(
-        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
-        "SmartLedger"
+
+    private fun backupDirs(): List<File> = listOf(
+        File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+            "SmartLedger"
+        ),
+        File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "SmartLedger"),
+        File(context.filesDir, "SmartLedger")
     )
 
     private val _backupHistory = MutableStateFlow<List<BackupInfo>>(emptyList())
@@ -70,16 +75,29 @@ class BackupViewModel(application: Application) : AndroidViewModel(application) 
 
     fun loadBackupHistory() {
         viewModelScope.launch(Dispatchers.IO) {
-            val history = mutableListOf<BackupInfo>()
-            if (backupDir.exists()) {
-                backupDir.listFiles()?.filter { it.name.endsWith(".csv") }?.sortedByDescending { it.lastModified() }?.forEach { file ->
-                    val date = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA).format(Date(file.lastModified()))
-                    val size = formatFileSize(file.length())
-                    val lines = file.useLines { it.count() } - 1  // 流式读取，不加载全文
-                    history.add(BackupInfo(file.name, date, size, lines.coerceAtLeast(0)))
-                }
+            val files = mutableListOf<File>()
+            for (dir in backupDirs()) {
+                if (!dir.exists()) continue
+                dir.listFiles()?.filter { it.name.endsWith(".csv") }?.let { files.addAll(it) }
             }
-            _backupHistory.value = history
+            // 同名只保留最新修改的一份
+            val latestByName = files
+                .groupBy { it.name }
+                .mapValues { (_, list) -> list.maxByOrNull { it.lastModified() }!! }
+                .values
+                .sortedByDescending { it.lastModified() }
+
+            _backupHistory.value = latestByName.map { file ->
+                val date = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA)
+                    .format(Date(file.lastModified()))
+                val size = formatFileSize(file.length())
+                val lines = try {
+                    file.useLines { it.count() } - 1
+                } catch (_: Exception) {
+                    0
+                }
+                BackupInfo(file.name, date, size, lines.coerceAtLeast(0))
+            }
         }
     }
 
@@ -92,7 +110,7 @@ class BackupViewModel(application: Application) : AndroidViewModel(application) 
                 Toast.makeText(context, "备份成功", Toast.LENGTH_SHORT).show()
                 loadBackupHistory()
             } else {
-                Toast.makeText(context, "备份失败：没有数据", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "备份失败：无数据或无法写入存储", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -112,9 +130,9 @@ class BackupViewModel(application: Application) : AndroidViewModel(application) 
 
     fun deleteBackup(fileName: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val file = java.io.File(backupDir, fileName)
-            if (file.exists()) {
-                file.delete()
+            backupDirs().forEach { dir ->
+                val file = File(dir, fileName)
+                if (file.exists()) file.delete()
             }
             loadBackupHistory()
         }

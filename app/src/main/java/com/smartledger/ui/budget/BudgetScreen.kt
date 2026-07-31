@@ -327,7 +327,9 @@ private fun EditBudgetDialog(
     onSave: (Double) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var budgetText by remember { mutableStateOf(currentBudget.toLong().toString()) }
+    var budgetText by remember {
+        mutableStateOf(com.smartledger.util.CurrencyUtil.toEditableString(currentBudget))
+    }
 
     SmartLedgerInputDialog(
         onDismissRequest = onDismiss,

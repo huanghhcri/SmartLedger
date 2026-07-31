@@ -23,6 +23,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.DisposableEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.smartledger.data.db.entity.Category
 import com.smartledger.data.db.entity.Transaction
@@ -46,6 +47,18 @@ fun HomeScreen(
     val recentTransactions by viewModel.recentTransactions.collectAsState(initial = emptyList())
     val categories by viewModel.categories.collectAsState(initial = emptyList())
     val context = LocalContext.current
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+
+    // 回到前台时刷新今日/本月区间（跨日不重启进程也能更新）
+    DisposableEffect(lifecycleOwner) {
+        val observer = object : androidx.lifecycle.DefaultLifecycleObserver {
+            override fun onResume(owner: androidx.lifecycle.LifecycleOwner) {
+                viewModel.refreshDateRange()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     val nickname = context.getSharedPreferences("smart_ledger", Context.MODE_PRIVATE)
         .getString("nickname", "记账用户") ?: "记账用户"
@@ -168,49 +181,41 @@ fun HomeScreen(
         }
     }
 
-    // ═══ 长按操作弹窗 ═══
+    // ═══ 长按操作弹窗（统一 SmartLedgerDialog）═══
     if (showActionMenu && editingTransaction != null) {
-        AlertDialog(
+        com.smartledger.ui.components.SmartLedgerDialog(
             onDismissRequest = { showActionMenu = false },
-            shape = RoundedCornerShape(20.dp),
-            containerColor = SmartLedgerColors.surface,
-            titleContentColor = SmartLedgerColors.fg,
-            title = { Text("操作", fontWeight = FontWeight.Bold) },
-            text = {
-                Column {
-                    TextButton(
-                        onClick = { showActionMenu = false; showEditDialog = true },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp)
-                    ) {
-                        Icon(Icons.Outlined.Edit, contentDescription = null, tint = SmartLedgerColors.fg, modifier = Modifier.size(20.dp))
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text("编辑账单", color = SmartLedgerColors.fg, modifier = Modifier.weight(1f))
-                    }
-                    TextButton(
-                        onClick = { showActionMenu = false; showCategorySelect = true },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp)
-                    ) {
-                        Icon(Icons.Outlined.GridView, contentDescription = null, tint = SmartLedgerColors.fg, modifier = Modifier.size(20.dp))
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text("修改分类", color = SmartLedgerColors.fg, modifier = Modifier.weight(1f))
-                    }
-                    TextButton(
-                        onClick = { showActionMenu = false; showDeleteConfirm = true },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp)
-                    ) {
-                        Icon(Icons.Outlined.Delete, contentDescription = null, tint = SmartLedgerColors.expense, modifier = Modifier.size(20.dp))
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text("删除账单", color = SmartLedgerColors.expense, modifier = Modifier.weight(1f))
-                    }
+            title = "操作",
+            dismissText = "取消",
+            onDismiss = { showActionMenu = false },
+            content = {
+                Spacer(modifier = Modifier.height(4.dp))
+                TextButton(
+                    onClick = { showActionMenu = false; showEditDialog = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(Icons.Outlined.Edit, contentDescription = null, tint = SmartLedgerColors.fg, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text("编辑账单", color = SmartLedgerColors.fg, modifier = Modifier.weight(1f))
                 }
-            },
-            confirmButton = {},
-            dismissButton = {
-                TextButton(onClick = { showActionMenu = false }) {
-                    Text("取消", color = SmartLedgerColors.fgSecondary)
+                TextButton(
+                    onClick = { showActionMenu = false; showCategorySelect = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(Icons.Outlined.GridView, contentDescription = null, tint = SmartLedgerColors.fg, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text("修改分类", color = SmartLedgerColors.fg, modifier = Modifier.weight(1f))
+                }
+                TextButton(
+                    onClick = { showActionMenu = false; showDeleteConfirm = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(Icons.Outlined.Delete, contentDescription = null, tint = SmartLedgerColors.expense, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text("删除账单", color = SmartLedgerColors.expense, modifier = Modifier.weight(1f))
                 }
             }
         )
@@ -610,6 +615,9 @@ private fun CategoryEditDialog(
     onSelect: (Long?) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val typeCategories = remember(categories, transaction.type) {
+        categories.filter { it.type == transaction.type }
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         shape = RoundedCornerShape(20.dp),
@@ -618,7 +626,7 @@ private fun CategoryEditDialog(
         title = { Text("选择分类", fontWeight = FontWeight.Bold) },
         text = {
             Column {
-                categories.forEach { category ->
+                typeCategories.forEach { category ->
                     val isSelected = category.id == transaction.categoryId
                     TextButton(
                         onClick = { onSelect(category.id) },
@@ -655,10 +663,13 @@ private fun EditTransactionDialog(
     onSave: (Transaction) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var amountText by remember { mutableStateOf(transaction.amount.toLong().toString()) }
+    var amountText by remember { mutableStateOf(CurrencyUtil.toEditableString(transaction.amount)) }
     var merchant by remember { mutableStateOf(transaction.merchant ?: "") }
     var note by remember { mutableStateOf(transaction.note ?: "") }
     var selectedCategoryId by remember { mutableStateOf(transaction.categoryId) }
+    val typeCategories = remember(categories, transaction.type) {
+        categories.filter { it.type == transaction.type }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -712,7 +723,7 @@ private fun EditTransactionDialog(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    categories.forEach { category ->
+                    typeCategories.forEach { category ->
                         val isSelected = category.id == selectedCategoryId
                         FilterChip(
                             selected = isSelected,

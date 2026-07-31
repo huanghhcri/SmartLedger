@@ -74,12 +74,7 @@ class AutoBackupWorker(
             val dateFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.CHINA)
             val fileName = "SmartLedger_Auto_${dateFormat.format(Date())}.csv"
 
-            val backupDir = File(
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
-                "SmartLedger"
-            )
-            if (!backupDir.exists()) backupDir.mkdirs()
-
+            val backupDir = resolveBackupDir(context) ?: return@withContext Result.retry()
             val file = File(backupDir, fileName)
             FileWriter(file).use { writer ->
                 writer.write("\uFEFF")
@@ -116,6 +111,25 @@ class AutoBackupWorker(
             Log.e("AutoBackup", "Backup failed", e)
             Result.retry()
         }
+    }
+
+    private fun resolveBackupDir(context: Context): File? {
+        val candidates = listOf(
+            File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+                "SmartLedger"
+            ),
+            File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "SmartLedger"),
+            File(context.filesDir, "SmartLedger")
+        )
+        for (dir in candidates) {
+            try {
+                if (!dir.exists()) dir.mkdirs()
+                if (dir.exists() && dir.canWrite()) return dir
+            } catch (_: Exception) {
+            }
+        }
+        return null
     }
 
     private fun escapeCsv(value: String): String {

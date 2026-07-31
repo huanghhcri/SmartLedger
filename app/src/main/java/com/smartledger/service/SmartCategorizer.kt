@@ -1,5 +1,6 @@
 package com.smartledger.service
 
+import android.content.Context
 import com.smartledger.data.db.entity.Category
 
 /**
@@ -7,6 +8,9 @@ import com.smartledger.data.db.entity.Category
  * 根据商户名、支付场景自动匹配分类
  */
 object SmartCategorizer {
+
+    private const val PREFS = "smart_ledger"
+    private const val KEY_PREFIX = "merchant_cat_"
 
     // ═══════════════════════════════════════════════════════
     // 分类关键词映射
@@ -43,9 +47,10 @@ object SmartCategorizer {
             keywords = listOf(
                 "淘宝", "天猫", "京东", "拼多多", "苏宁", "国美",
                 "唯品会", "得物", "闲鱼", "转转", "亚马逊",
+                "良品铺子", "自营旗舰店", "旗舰店",
                 "商城", "超市", "便利店", "711", "全家", "罗森",
                 "优衣库", "ZARA", "H&M", "耐克", "阿迪", "李宁", "安踏",
-                "抖音", "快手", "小红书",
+                "抖音商城", "抖音超市", "快手小店", "小红书商城",
                 "华为", "小米", "苹果", "Apple", "数码", "电器",
                 "叮咚买菜", "盒马", "每日优鲜", "永辉", "大润发", "沃尔玛",
                 "山姆", "Costco", "开市客", "物美", "华润万家", "联华"
@@ -152,16 +157,11 @@ object SmartCategorizer {
         categories: List<Category>,
         type: String = "expense"
     ): Long? {
-        // 构建待匹配文本
+        // 关键词只匹配商户/备注，不要把「微信/支付宝/抖音」等支付渠道拼进去
         val text = buildString {
             merchant?.let { append(it).append(" ") }
-            paymentMethod?.let { append(it).append(" ") }
             note?.let { append(it) }
         }.lowercase()
-
-        if (text.isBlank()) {
-            return categories.find { it.name == "其他" && it.type == type }?.id
-        }
 
         // 0. 用户手动改过分类的商户优先匹配
         val savedCategoryId = merchantOverrideMap[merchant?.trim()]
@@ -169,32 +169,47 @@ object SmartCategorizer {
             return savedCategoryId
         }
 
-        // 1. 先按关键词匹配
-        for (rule in categoryRules) {
-            if (rule.matches(text)) {
-                val category = categories.find {
-                    it.name == rule.categoryName && it.type == type
-                }
-                if (category != null) {
-                    return category.id
+        if (text.isNotBlank()) {
+            // 1. 先按商户/备注关键词匹配
+            for (rule in categoryRules) {
+                if (rule.matches(text)) {
+                    val category = categories.find {
+                        it.name == rule.categoryName && it.type == type
+                    }
+                    if (category != null) {
+                        return category.id
+                    }
                 }
             }
         }
 
-        // 2. 按支付方式推断
-        for ((hint, categoryName) in paymentMethodHints) {
-            if (text.contains(hint.lowercase())) {
-                val category = categories.find {
-                    it.name == categoryName && it.type == type
-                }
-                if (category != null) {
-                    return category.id
+        // 2. 仅用支付方式专属提示（不含渠道名本身）
+        val method = paymentMethod?.lowercase().orEmpty()
+        if (method.isNotBlank()) {
+            for ((hint, categoryName) in paymentMethodHints) {
+                if (method.contains(hint.lowercase())) {
+                    val category = categories.find {
+                        it.name == categoryName && it.type == type
+                    }
+                    if (category != null) {
+                        return category.id
+                    }
                 }
             }
         }
 
         // 3. 未匹配到任何分类 → 返回"其他"
         return categories.find { it.name == "其他" && it.type == type }?.id
+    }
+
+    fun init(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        merchantOverrideMap.clear()
+        for ((key, value) in prefs.all) {
+            if (key.startsWith(KEY_PREFIX) && value is Long) {
+                merchantOverrideMap[key.removePrefix(KEY_PREFIX)] = value
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════
@@ -208,10 +223,14 @@ object SmartCategorizer {
 
     private val merchantOverrideMap = mutableMapOf<String, Long>()
 
-    fun saveMerchantCategory(merchant: String, categoryId: Long) {
-        if (merchant.isNotBlank()) {
-            merchantOverrideMap[merchant.trim()] = categoryId
-        }
+    fun saveMerchantCategory(context: Context, merchant: String, categoryId: Long) {
+        if (merchant.isBlank()) return
+        val key = merchant.trim()
+        merchantOverrideMap[key] = categoryId
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putLong(KEY_PREFIX + key, categoryId)
+            .apply()
     }
 
     private data class CategoryRule(

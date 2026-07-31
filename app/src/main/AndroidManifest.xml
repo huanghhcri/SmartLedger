@@ -11,12 +11,15 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- 前台服务 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 开机自启 -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- 短信读取（兜底通道） -->
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <uses-permission android:name="android.permission.READ_SMS" />
+    <!-- 忽略电池优化引导 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:name=".SmartLedgerApp"
@@ -29,6 +32,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:theme="@style/Theme.SmartLedger">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -36,10 +40,10 @@
             </intent-filter>
         </activity>
 
-        <!-- 通知监听服务 -->
+        <!-- 通知监听服务：系统跨 UID 绑定，exported 需为 true -->
         <service
             android:name=".service.PaymentNotificationListener"
-            android:exported="false"
+            android:exported="true"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
@@ -50,7 +54,11 @@
         <service
             android:name=".service.FloatingWindowService"
             android:exported="false"
-            android:foregroundServiceType="specialUse" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Show overlay confirmation after payment notification" />
+        </service>
 
         <!-- FileProvider for CSV export -->
         <provider
@@ -63,19 +71,39 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
-        <!-- 开机自启广播 -->
+        <!-- 开机自启广播：系统广播要求 exported=true -->
         <receiver
             android:name=".service.BootReceiver"
-            android:exported="false">
+            android:exported="true"
+            android:permission="android.permission.RECEIVE_BOOT_COMPLETED">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
 
+        <!-- 覆盖安装完成后标记需重新开启通知使用权 -->
+        <receiver
+            android:name=".service.PackageReplacedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 保活前台服务 -->
+        <service
+            android:name=".service.KeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keep payment notification listener alive for auto bookkeeping" />
+        </service>
+
         <!-- 短信兜底通道 -->
         <receiver
             android:name=".service.SmsReceiver"
-            android:exported="false"
+            android:exported="true"
             android:permission="android.permission.BROADCAST_SMS">
             <intent-filter>
                 <action android:name="android.provider.Telephony.SMS_RECEIVED" />

@@ -13,9 +13,11 @@ class BootReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
-            Log.d(TAG, "Boot completed, notification listener will be started by system")
-            // NotificationListenerService 由系统管理，开机后会自动恢复
-            // 这里只是记录日志，确认开机广播接收正常
+            Log.d(TAG, "Boot completed, starting KeepAlive + rebind NLS")
+            val app = context.applicationContext
+            KeepAliveService.start(app)
+            ListenerStatus.requestRebind(app, force = true)
+            com.smartledger.util.ListenerRebindScheduler.schedule(app)
         }
     }
 }

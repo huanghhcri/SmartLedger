@@ -86,20 +86,24 @@ object DateUtil {
         }
     }
 
-    // ═══ 周时间范围 ═══
+    // ═══ 周时间范围（周一 00:00 ～ 周日 23:59:59，不受 firstDayOfWeek 影响）═══
     fun getWeekStartTime(): Long {
         val cal = Calendar.getInstance()
-        cal.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
         cal.set(Calendar.HOUR_OF_DAY, 0)
         cal.set(Calendar.MINUTE, 0)
         cal.set(Calendar.SECOND, 0)
         cal.set(Calendar.MILLISECOND, 0)
+        // Calendar.SUNDAY=1 ... SATURDAY=7；周一向前偏移天数
+        val dayOfWeek = cal.get(Calendar.DAY_OF_WEEK)
+        val daysFromMonday = if (dayOfWeek == Calendar.SUNDAY) 6 else dayOfWeek - Calendar.MONDAY
+        cal.add(Calendar.DAY_OF_MONTH, -daysFromMonday)
         return cal.timeInMillis
     }
 
     fun getWeekEndTime(): Long {
         val cal = Calendar.getInstance()
-        cal.set(Calendar.DAY_OF_WEEK, Calendar.SUNDAY)
+        cal.timeInMillis = getWeekStartTime()
+        cal.add(Calendar.DAY_OF_MONTH, 6)
         cal.set(Calendar.HOUR_OF_DAY, 23)
         cal.set(Calendar.MINUTE, 59)
         cal.set(Calendar.SECOND, 59)
