@@ -227,6 +227,11 @@ fun MainApp() {
 
     // ═══ 自动检查更新（每天最多一次）═══
     var updateInfo by remember { mutableStateOf<com.smartledger.util.UpdateChecker.UpdateInfo?>(null) }
+    var isDownloadingUpdate by remember { mutableStateOf(false) }
+    var downloadProgress by remember { mutableStateOf(0) }
+    var pendingInstallFile by remember { mutableStateOf<java.io.File?>(null) }
+    var updateDownloadError by remember { mutableStateOf<String?>(null) }
+    val updateScope = rememberCoroutineScope()
     LaunchedEffect(Unit) {
         val prefs = context.getSharedPreferences("smart_ledger", Context.MODE_PRIVATE)
         val lastCheck = prefs.getLong("last_update_check", 0)
@@ -501,21 +506,118 @@ fun MainApp() {
 
     // ═══ 检查更新弹窗 ═══
     updateInfo?.let { info ->
+        if (!isDownloadingUpdate) {
+            SmartLedgerDialog(
+                onDismissRequest = { updateInfo = null },
+                iconTint = SmartLedgerColors.accent,
+                title = "发现新版本 ${info.versionName}",
+                text = if (info.releaseNotes.isNotBlank()) {
+                    val notes = info.releaseNotes.take(500)
+                    if (info.releaseNotes.length > 500) "$notes\n..." else notes
+                } else "有新版本可用，建议更新。",
+                confirmText = if (info.apkUrl.isNullOrBlank()) "前往下载页" else "应用内下载",
+                onConfirm = {
+                    if (info.apkUrl.isNullOrBlank()) {
+                        com.smartledger.util.UpdateChecker.openDownloadPage(context, info)
+                        updateInfo = null
+                    } else {
+                        isDownloadingUpdate = true
+                        downloadProgress = 0
+                        updateScope.launch {
+                            when (val result =
+                                com.smartledger.util.UpdateChecker.downloadApk(context, info) { p ->
+                                    downloadProgress = p
+                                }
+                            ) {
+                                is com.smartledger.util.UpdateChecker.DownloadResult.Success -> {
+                                    isDownloadingUpdate = false
+                                    updateInfo = null
+                                    val ok = com.smartledger.util.UpdateChecker.installApk(
+                                        context, result.apkFile
+                                    )
+                                    if (!ok) {
+                                        pendingInstallFile = result.apkFile
+                                        Toast.makeText(
+                                            context,
+                                            "请允许安装未知应用后点「继续安装」",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    } else {
+                                        Toast.makeText(
+                                            context,
+                                            "请按提示完成安装",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
+                                is com.smartledger.util.UpdateChecker.DownloadResult.NeedBrowser -> {
+                                    isDownloadingUpdate = false
+                                    com.smartledger.util.UpdateChecker.openDownloadPage(context, info)
+                                    updateInfo = null
+                                }
+                                is com.smartledger.util.UpdateChecker.DownloadResult.Failed -> {
+                                    isDownloadingUpdate = false
+                                    updateDownloadError = result.message
+                                }
+                            }
+                        }
+                    }
+                },
+                dismissText = "稍后再说",
+                onDismiss = { updateInfo = null }
+            )
+        }
+    }
+
+    if (isDownloadingUpdate) {
         SmartLedgerDialog(
-            onDismissRequest = { updateInfo = null },
+            onDismissRequest = { },
             iconTint = SmartLedgerColors.accent,
-            title = "发现新版本 ${info.versionName}",
-            text = if (info.releaseNotes.isNotBlank()) {
-                val notes = info.releaseNotes.take(500)
-                if (info.releaseNotes.length > 500) "$notes\n..." else notes
-            } else "有新版本可用，建议更新。",
-            confirmText = "立即更新",
+            title = "正在下载更新",
+            text = "已下载 $downloadProgress%，请保持网络畅通…",
+            confirmText = null,
+            dismissText = "",
+            content = {
+                Spacer(modifier = Modifier.height(12.dp))
+                LinearProgressIndicator(
+                    progress = downloadProgress / 100f,
+                    modifier = Modifier.fillMaxWidth(),
+                    color = SmartLedgerColors.accent,
+                    trackColor = SmartLedgerColors.border
+                )
+            }
+        )
+    }
+
+    pendingInstallFile?.let { apk ->
+        SmartLedgerDialog(
+            onDismissRequest = { pendingInstallFile = null },
+            iconTint = SmartLedgerColors.accent,
+            title = "安装更新",
+            text = "安装包已下载完成。若已允许安装未知应用，请点击继续安装。",
+            confirmText = "继续安装",
             onConfirm = {
-                com.smartledger.util.UpdateChecker.openDownloadPage(context, info)
-                updateInfo = null
+                val ok = com.smartledger.util.UpdateChecker.installApk(context, apk)
+                if (ok) {
+                    pendingInstallFile = null
+                    Toast.makeText(context, "请按提示完成安装", Toast.LENGTH_SHORT).show()
+                } else {
+                    updateDownloadError = "仍未获得安装权限，请在系统设置中允许本应用安装未知应用。"
+                }
             },
-            dismissText = "稍后再说",
-            onDismiss = { updateInfo = null }
+            dismissText = "取消",
+            onDismiss = { pendingInstallFile = null }
+        )
+    }
+
+    updateDownloadError?.let { msg ->
+        SmartLedgerDialog(
+            onDismissRequest = { updateDownloadError = null },
+            iconTint = SmartLedgerColors.expense,
+            title = "更新提示",
+            text = msg,
+            confirmText = "好的",
+            onConfirm = { updateDownloadError = null }
         )
     }
 

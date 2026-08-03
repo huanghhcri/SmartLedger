@@ -9,4 +9,8 @@
     <files-path
         name="internal_backup"
         path="SmartLedger/" />
+    <!-- 应用内更新下载的 APK -->
+    <cache-path
+        name="apk_cache"
+        path="apk/" />
 </paths>

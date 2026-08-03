@@ -15,8 +15,8 @@ android {
         applicationId = "com.smartledger"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
-        versionName = "1.0.12"
+        versionCode = 15
+        versionName = "1.0.14"
     }
 
     // ═══ 签名配置（从 local.properties 安全读取）═══

@@ -193,11 +193,22 @@ class PaymentNotificationListener : NotificationListenerService() {
                 Regex("支付\\s*[\\d.]+").containsMatchIn(text) ||
                 Regex("支出\\([^)]*\\)[\\d.]+").containsMatchIn(text)
 
+        val isChatPay = packageName == "com.tencent.mm" ||
+            packageName.contains("AlipayGphone") ||
+            packageName.contains("ugc.aweme") ||
+            packageName.contains("ugc.live")
+
+        // 微信/支付宝/抖音/电商：无明确支付确认时直接跳过（防企业号「每天5元干饭」）
+        if ((isShopping || isChatPay) && !NotificationParser.hasStrongPaymentSignal(text)) {
+            Log.d(TAG, "Chat/shopping without pay confirm, skip: $text")
+            return
+        }
+
         if (!hasExpenseKeyword && !hasIncomeKeyword) {
             Log.d(TAG, "No keywords found, checking if monitored app with amount...")
-            // 电商无支付关键词时绝不能仅凭「带元」进入解析（省钱金额误记）
-            if (isShopping || !(isMonitoredApp && hasAmount)) {
-                Log.d(TAG, "Not monitored app or no amount (or shopping without verb), skipping")
+            // 电商/聊天 App 无支付确认时绝不能仅凭「带元」进入解析
+            if (isShopping || isChatPay || !(isMonitoredApp && hasAmount)) {
+                Log.d(TAG, "Not monitored app or no amount (or promo app), skipping")
                 return
             }
         }

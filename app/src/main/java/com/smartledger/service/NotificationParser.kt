@@ -32,15 +32,13 @@ object NotificationParser {
     // ═══════════════════════════════════════════════════════
     private val wechatExpensePatterns = listOf(
         Regex("付款[￥¥]([\\d.]+)"),
-        Regex("支付([\\d.]+)元"),
         Regex("向(.+?)付款[￥¥]([\\d.]+)"),
         Regex("一笔([\\d.]+)元的支出"),
         Regex("已支付[￥¥]([\\d.]+)"),              // 已支付¥0.01 / [2条]微信支付：已支付¥648.00
         Regex("微信支付[：:]\\s*已支付[￥¥]([\\d.]+)"),
-        Regex("支付[￥¥]([\\d.]+)"),                 // 支付¥0.01
-        Regex("支出([\\d.]+)元"),
-        Regex("消费([\\d.]+)元"),
-        Regex("微信支付.*?[￥¥]([\\d.]+)")
+        Regex("支付[￥¥]([\\d.]+)"),                 // 支付¥0.01（须带￥/¥，避免「支付5元干饭」类）
+        Regex("微信支付.*?已支付[￥¥]([\\d.]+)")
+        // 已移除：支付X元 / 支出X元 / 消费X元 —— 易被公众号营销命中
     )
 
     private val wechatIncomePatterns = listOf(
@@ -279,7 +277,18 @@ object NotificationParser {
     }
 
     /**
-     * 明确的支付/退款确认信号（有则允许记账；无则电商营销一律跳过）
+     * 微信 / 支付宝 / 抖音：公众号、企业号、营销推送极多，禁止「见元就记」
+     */
+    private fun isStrictChatPayApp(packageName: String): Boolean {
+        return packageName.contains("tencent.mm") ||
+            packageName.contains("AlipayGphone") ||
+            packageName.contains("ugc.aweme") ||
+            packageName.contains("ugc.live")
+    }
+
+    /**
+     * 明确的支付/退款确认信号。
+     * 注意：不能仅因出现「微信支付」+「元」就放行（企业号「每天5元干饭」会误伤）。
      */
     fun hasStrongPaymentSignal(text: String): Boolean {
         if (text.contains("使用【") && text.contains("支付")) return true
@@ -288,15 +297,30 @@ object NotificationParser {
         if (text.contains("已支付") || text.contains("已付款")) return true
         if (Regex("付款[￥¥]").containsMatchIn(text)) return true
         if (Regex("支付[￥¥]").containsMatchIn(text)) return true
-        if (text.contains("微信支付") && (text.contains("¥") || text.contains("￥") || text.contains("元"))) {
+        if (Regex("向.+?付款[￥¥]").containsMatchIn(text)) return true
+        if (Regex("一笔[\\d.]+元的支出").containsMatchIn(text)) return true
+        if (Regex("一笔[\\d.]+元的收入").containsMatchIn(text)) return true
+        if (Regex("收款[￥¥]").containsMatchIn(text)) return true
+        // 微信支付：必须带确认动词，不能仅有「元」
+        if (text.contains("微信支付") && (
+                text.contains("已支付") || text.contains("付款") ||
+                    text.contains("收款") || text.contains("退款") ||
+                    Regex("支付[￥¥]").containsMatchIn(text)
+                )
+        ) {
             return true
         }
-        if (text.contains("支付宝") && (text.contains("付款") || text.contains("支出") || text.contains("成功付款"))) {
+        if (text.contains("支付宝") && (
+                text.contains("付款") || text.contains("成功付款") ||
+                    text.contains("的支出") || text.contains("的收入") ||
+                    text.contains("退款")
+                )
+        ) {
             return true
         }
         // 退款入账（排除提现提醒）
         if ((text.contains("退款成功") || text.contains("退款到账") ||
-                (text.contains("退款") && text.contains("元"))) &&
+                (text.contains("退款") && (text.contains("元") || text.contains("¥") || text.contains("￥")))) &&
             !text.contains("提现") && !text.contains("尚未处理")
         ) {
             return true
@@ -312,8 +336,8 @@ object NotificationParser {
     }
 
     /**
-     * 营销 / 额度 / 物流等非真实支付通知。
-     * 例：京东「PLUS会员省钱金额已达648.13元」、提现提醒「打款已到账尚未处理」
+     * 营销 / 额度 / 物流 / 公众号推送等非真实支付通知。
+     * 例：京东省钱金额；微信企业号「每天5元干饭」「5元请你吃外卖」
      */
     fun isPromotionalOrNonPayment(text: String): Boolean {
         if (hasStrongPaymentSignal(text)) return false
@@ -324,11 +348,19 @@ object NotificationParser {
             "可用额度", "信用额度", "剩余额度", "账户剩余", "剩余可用额度",
             "验证码", "登录验证", "登录成功", "账单日",
             "物流", "配送", "已发货", "待收货", "下单关怀", "签收",
-            "优惠券", "领券", "领积分", "积分到账",
+            "优惠券", "领券", "领积分", "积分到账", "领券福利", "福利官",
             "猜一局", "大家都在猜", "周末大家都在",
-            "提醒：账户", "签到领", "每日签到"
+            "提醒：账户", "签到领", "每日签到",
+            // 微信公众号 / 企业号外卖券营销
+            "干饭", "请你吃", "今日已上新", "已上新", "外卖券",
+            "点击领取", "立即领取", "限时领取", "天天特价"
         )
-        return noise.any { text.contains(it) }
+        if (noise.any { text.contains(it) }) return true
+        // 「每天5元…」类文案：有「天/每」+「元」但无支付确认
+        if (Regex("每天\\d+(\\.\\d+)?元").containsMatchIn(text)) return true
+        if (Regex("\\d+(\\.\\d+)?元请你").containsMatchIn(text)) return true
+        if (Regex("\\d+(\\.\\d+)?元干饭").containsMatchIn(text)) return true
+        return false
     }
 
     /** 去掉微信等聚合前缀：[2条]微信支付：已支付¥648.00 */
@@ -470,8 +502,11 @@ object NotificationParser {
         if (isCreditProductPayment(rawText)) return null
         if (isPromotionalOrNonPayment(rawText)) return null
 
-        // 京东/淘宝等：必须有明确支付/退款信号，禁止「任意带元就记一笔」
-        if (isShoppingApp(packageName) && !hasStrongPaymentSignal(rawText)) {
+        // 电商 / 微信 / 支付宝 / 抖音：必须有明确支付确认，禁止「见元就记」
+        // （否则企业号「每天5元干饭」会被记成支出）
+        if ((isShoppingApp(packageName) || isStrictChatPayApp(packageName)) &&
+            !hasStrongPaymentSignal(rawText)
+        ) {
             return null
         }
 
@@ -506,8 +541,8 @@ object NotificationParser {
                 amountPatterns = getExpensePatterns(paymentMethod, packageName)
             }
         } else {
-            // 银行类可无关键词；电商已在上方拦截
-            if (isShoppingApp(packageName)) return null
+            // 仅银行等可走「有金额无关键词」兜底；聊天/电商已在上方拦截
+            if (isShoppingApp(packageName) || isStrictChatPayApp(packageName)) return null
             val hasAmount = rawText.contains("元") || rawText.contains("￥") || rawText.contains("¥")
             if (hasAmount) {
                 type = "expense"
