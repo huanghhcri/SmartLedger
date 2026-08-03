@@ -35,7 +35,8 @@ object NotificationParser {
         Regex("支付([\\d.]+)元"),
         Regex("向(.+?)付款[￥¥]([\\d.]+)"),
         Regex("一笔([\\d.]+)元的支出"),
-        Regex("已支付[￥¥]([\\d.]+)"),              // 已支付¥0.01
+        Regex("已支付[￥¥]([\\d.]+)"),              // 已支付¥0.01 / [2条]微信支付：已支付¥648.00
+        Regex("微信支付[：:]\\s*已支付[￥¥]([\\d.]+)"),
         Regex("支付[￥¥]([\\d.]+)"),                 // 支付¥0.01
         Regex("支出([\\d.]+)元"),
         Regex("消费([\\d.]+)元"),
@@ -193,21 +194,23 @@ object NotificationParser {
     // ═══════════════════════════════════════════════════════
     // 京东 / 京东金融（银行卡支付确认）
     // ═══════════════════════════════════════════════════════
+    // 京东/淘宝等：只认明确支付确认，禁止裸「xxx元 / ¥」以免营销文案误记
     private val jdExpensePatterns = listOf(
         Regex("使用【.+?】支付([\\d.]+)"),          // 使用【工商银行储蓄卡(7619)】支付16.90
-        Regex("支付([\\d.]+)元"),
-        Regex("成功支付([\\d.]+)"),
+        Regex("成功支付([\\d.]+)元?"),
+        Regex("付款成功.*?([\\d.]+)元"),
+        Regex("已支付[￥¥]?([\\d.]+)"),
+        Regex("支付成功.*?([\\d.]+)元"),
         Regex("付款([\\d.]+)元"),
-        Regex("支付([\\d.]+)"),                      // 截断无「元」
-        Regex("[￥¥]([\\d.]+)")
+        Regex("支付([\\d.]+)元")
+        // 不再：支付([\d.]+)、[￥¥]([\d.]+) —— 会吃到「省钱金额已达648.13元」
     )
 
     private val jdIncomePatterns = listOf(
-        Regex("退款([\\d.]+)元"),
-        Regex("退款.*?([\\d.]+)元"),           // 必须带「元」，避免吃到卡号(7619)
         Regex("退款成功.*?([\\d.]+)元"),
-        Regex("到账([\\d.]+)元"),
-        Regex("[￥¥]([\\d.]+)")
+        Regex("退款([\\d.]+)元"),
+        Regex("退款.*?([\\d.]+)元")
+        // 不认裸「到账」：提现提醒/未领取打款也会带「到账」
     )
 
     private val bankExpensePatterns = listOf(
@@ -265,6 +268,76 @@ object NotificationParser {
     private val creditProductKeywords = listOf(
         "白条", "花呗", "借呗", "金条", "信用购", "有钱花", "分期乐", "任性付"
     )
+
+    /** 电商 / 营销类 App：易把「省钱金额」等误当成支付 */
+    private fun isShoppingApp(packageName: String): Boolean {
+        return packageName.contains("jingdong") ||
+            packageName.contains("jd.jr") ||
+            packageName.contains("jdlite") ||
+            packageName.contains("taobao") ||
+            packageName.contains("tmall")
+    }
+
+    /**
+     * 明确的支付/退款确认信号（有则允许记账；无则电商营销一律跳过）
+     */
+    fun hasStrongPaymentSignal(text: String): Boolean {
+        if (text.contains("使用【") && text.contains("支付")) return true
+        if (text.contains("成功支付") || text.contains("支付成功")) return true
+        if (text.contains("付款成功") || text.contains("成功付款")) return true
+        if (text.contains("已支付") || text.contains("已付款")) return true
+        if (Regex("付款[￥¥]").containsMatchIn(text)) return true
+        if (Regex("支付[￥¥]").containsMatchIn(text)) return true
+        if (text.contains("微信支付") && (text.contains("¥") || text.contains("￥") || text.contains("元"))) {
+            return true
+        }
+        if (text.contains("支付宝") && (text.contains("付款") || text.contains("支出") || text.contains("成功付款"))) {
+            return true
+        }
+        // 退款入账（排除提现提醒）
+        if ((text.contains("退款成功") || text.contains("退款到账") ||
+                (text.contains("退款") && text.contains("元"))) &&
+            !text.contains("提现") && !text.contains("尚未处理")
+        ) {
+            return true
+        }
+        // 银行动账
+        if (text.contains("动账") || text.contains("支出(") || text.contains("收入(")) return true
+        if ((text.contains("储蓄卡") || text.contains("借记卡") || text.contains("信用卡")) &&
+            (text.contains("支付") || text.contains("消费") || text.contains("扣款"))
+        ) {
+            return true
+        }
+        return false
+    }
+
+    /**
+     * 营销 / 额度 / 物流等非真实支付通知。
+     * 例：京东「PLUS会员省钱金额已达648.13元」、提现提醒「打款已到账尚未处理」
+     */
+    fun isPromotionalOrNonPayment(text: String): Boolean {
+        if (hasStrongPaymentSignal(text)) return false
+        val noise = listOf(
+            "省钱金额", "已省回", "省回", "倍会费", "PLUS会员", "会员已省",
+            "省钱明细", "点击查看", "相当于",
+            "提现提醒", "尚未处理", "将于", "过期", "现金打款",
+            "可用额度", "信用额度", "剩余额度", "账户剩余", "剩余可用额度",
+            "验证码", "登录验证", "登录成功", "账单日",
+            "物流", "配送", "已发货", "待收货", "下单关怀", "签收",
+            "优惠券", "领券", "领积分", "积分到账",
+            "猜一局", "大家都在猜", "周末大家都在",
+            "提醒：账户", "签到领", "每日签到"
+        )
+        return noise.any { text.contains(it) }
+    }
+
+    /** 去掉微信等聚合前缀：[2条]微信支付：已支付¥648.00 */
+    fun normalizeNotificationText(text: String): String {
+        return text
+            .replace(Regex("\\[\\d+条\\]"), "")
+            .replace(Regex("\\(\\d+条\\)"), "")
+            .trim()
+    }
 
     /**
      * 是否为白条/花呗等信贷支付（应跳过记账）。
@@ -392,9 +465,15 @@ object NotificationParser {
     // 核心解析
     // ═══════════════════════════════════════════════════════
     fun parse(title: String, content: String, packageName: String): ParsedPayment? {
-        val rawText = "$title $content"
+        val rawText = normalizeNotificationText("$title $content")
 
         if (isCreditProductPayment(rawText)) return null
+        if (isPromotionalOrNonPayment(rawText)) return null
+
+        // 京东/淘宝等：必须有明确支付/退款信号，禁止「任意带元就记一笔」
+        if (isShoppingApp(packageName) && !hasStrongPaymentSignal(rawText)) {
+            return null
+        }
 
         // 去掉尾号/卡号末四位，防止「尾号7619」「储蓄卡(7619)」被当成金额
         val text = maskCardTailNumbers(rawText)
@@ -417,7 +496,9 @@ object NotificationParser {
             amountPatterns = getExpensePatterns(paymentMethod, packageName)
         } else if (isIncome && isExpense) {
             // 两者都有，看哪个关键词更具体
-            if (rawText.contains("退款") || rawText.contains("退回") || rawText.contains("到账")) {
+            if (rawText.contains("退款") || rawText.contains("退回") ||
+                (rawText.contains("到账") && !rawText.contains("提现"))
+            ) {
                 type = "income"
                 amountPatterns = getIncomePatterns(paymentMethod, packageName)
             } else {
@@ -425,7 +506,8 @@ object NotificationParser {
                 amountPatterns = getExpensePatterns(paymentMethod, packageName)
             }
         } else {
-            // 都没有匹配，但可能是银行通知（没有明确关键词），尝试通用解析
+            // 银行类可无关键词；电商已在上方拦截
+            if (isShoppingApp(packageName)) return null
             val hasAmount = rawText.contains("元") || rawText.contains("￥") || rawText.contains("¥")
             if (hasAmount) {
                 type = "expense"
@@ -447,6 +529,15 @@ object NotificationParser {
             if (match != null && match.groupValues.size > 1) {
                 merchant = match.groupValues[1].trim()
                 if (merchant.isNotBlank()) break
+            }
+        }
+        // 电商收银台默认商户
+        if (merchant.isNullOrBlank() && isShoppingApp(packageName)) {
+            merchant = when {
+                packageName.contains("jingdong") || packageName.contains("jd.") -> "京东"
+                packageName.contains("tmall") -> "天猫"
+                packageName.contains("taobao") -> "淘宝"
+                else -> null
             }
         }
 
@@ -482,11 +573,12 @@ object NotificationParser {
             packageName.contains("AlipayGphone") -> alipayExpensePatterns
             packageName.contains("unionpay") -> unionpayExpensePatterns
             packageName.contains("ugc.aweme") || packageName.contains("ugc.live") -> douyinExpensePatterns
-            packageName.contains("jd.jr") || packageName.contains("jingdong") || packageName.contains("jdlite") ->
-                jdExpensePatterns + bankExpensePatterns
+            packageName.contains("jd.jr") || packageName.contains("jingdong") ||
+                packageName.contains("jdlite") || packageName.contains("taobao") ||
+                packageName.contains("tmall") -> jdExpensePatterns
             packageName.contains("icbc") -> icbcExpensePatterns + bankExpensePatterns
             packageName.contains("chinapost") || packageName.contains("psbc") -> psbcExpensePatterns
-            else -> bankExpensePatterns + jdExpensePatterns
+            else -> bankExpensePatterns
         }
     }
 
@@ -496,7 +588,9 @@ object NotificationParser {
             packageName.contains("AlipayGphone") -> alipayIncomePatterns
             packageName.contains("unionpay") -> unionpayIncomePatterns
             packageName.contains("ugc.aweme") || packageName.contains("ugc.live") -> douyinIncomePatterns
-            packageName.contains("jd.jr") || packageName.contains("jingdong") -> jdIncomePatterns + bankIncomePatterns
+            packageName.contains("jd.jr") || packageName.contains("jingdong") ||
+                packageName.contains("jdlite") || packageName.contains("taobao") ||
+                packageName.contains("tmall") -> jdIncomePatterns
             packageName.contains("icbc") -> icbcIncomePatterns
             packageName.contains("chinapost") || packageName.contains("psbc") -> psbcIncomePatterns
             else -> bankIncomePatterns

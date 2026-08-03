@@ -126,9 +126,6 @@ class PaymentNotificationListener : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         sbn ?: return
 
-        // 跳过 group summary 通知（系统聚合通知）
-        if (sbn.notification.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
-
         val packageName = sbn.packageName
         val notification = sbn.notification ?: return
         val extras = notification.extras ?: return
@@ -136,10 +133,22 @@ class PaymentNotificationListener : NotificationListenerService() {
         // 兼容微信等把金额放在 BIG_TEXT 的通知
         val (title, content) = extractNotificationText(extras)
         val postTime = sbn.postTime  // 通知发布时间，比 currentTimeMillis 更准确
+        val text = NotificationParser.normalizeNotificationText("$title $content")
 
-        Log.d(TAG, "Notification: pkg=$packageName, title=$title, content=$content, postTime=$postTime")
-
-        val text = "$title $content"
+        // 普通 App 的聚合摘要跳过；微信/支付宝摘要常带「[2条]已支付¥xx」，必须解析
+        val isGroupSummary =
+            notification.flags and Notification.FLAG_GROUP_SUMMARY != 0
+        if (isGroupSummary) {
+            val allowSummary = packageName == "com.tencent.mm" ||
+                packageName.contains("AlipayGphone")
+            val looksLikePay = NotificationParser.hasStrongPaymentSignal(text) ||
+                text.contains("已支付") || text.contains("付款")
+            if (!allowSummary || !looksLikePay) {
+                Log.d(TAG, "Skip group summary: pkg=$packageName")
+                return
+            }
+            Log.d(TAG, "Parse payment group summary: pkg=$packageName text=$text")
+        }
 
         Log.d(TAG, "=== New Notification ===")
         Log.d(TAG, "Package: $packageName")
@@ -153,6 +162,12 @@ class PaymentNotificationListener : NotificationListenerService() {
             return
         }
 
+        // 营销 / 额度 / 物流 / 提现提醒等
+        if (NotificationParser.isPromotionalOrNonPayment(text)) {
+            Log.d(TAG, "Promotional/non-payment, skip: $text")
+            return
+        }
+
         // 判断是否包含收入或支出关键词
         val hasExpenseKeyword = EXPENSE_KEYWORDS.any { text.contains(it) }
         val hasIncomeKeyword = INCOME_KEYWORDS.any { text.contains(it) }
@@ -160,6 +175,9 @@ class PaymentNotificationListener : NotificationListenerService() {
         Log.d(TAG, "hasExpenseKeyword=$hasExpenseKeyword, hasIncomeKeyword=$hasIncomeKeyword")
 
         val isMonitoredApp = isMonitoredPackage(packageName)
+        val isShopping = packageName.contains("jingdong") || packageName.contains("jd.jr") ||
+            packageName.contains("jdlite") || packageName.contains("taobao") ||
+            packageName.contains("tmall")
 
         // 正文含银行/动账/支付确认等也处理（覆盖未列入包名的银行 App）
         val isBankRelated = text.contains("银行") || text.contains("工商") || text.contains("邮政") ||
@@ -177,25 +195,15 @@ class PaymentNotificationListener : NotificationListenerService() {
 
         if (!hasExpenseKeyword && !hasIncomeKeyword) {
             Log.d(TAG, "No keywords found, checking if monitored app with amount...")
-            if (!(isMonitoredApp && hasAmount)) {
-                Log.d(TAG, "Not monitored app or no amount, skipping")
+            // 电商无支付关键词时绝不能仅凭「带元」进入解析（省钱金额误记）
+            if (isShopping || !(isMonitoredApp && hasAmount)) {
+                Log.d(TAG, "Not monitored app or no amount (or shopping without verb), skipping")
                 return
             }
         }
 
         if (!isMonitoredApp && !isBankRelated) {
             Log.d(TAG, "Not monitored app and not bank related, skipping")
-            return
-        }
-
-        // 过滤明显非交易通知
-        val nonTransactionKeywords = listOf(
-            "验证码", "登录", "登录验证", "可用额度", "信用额度", "账单日",
-            "下单关怀", "物流", "配送", "已发货", "待收货", "优惠券"
-        )
-        val hasTransactionVerb = EXPENSE_KEYWORDS.any { text.contains(it) } || INCOME_KEYWORDS.any { text.contains(it) }
-        if (nonTransactionKeywords.any { text.contains(it) } && !hasTransactionVerb) {
-            Log.d(TAG, "Non-transaction notification, skipping")
             return
         }
 
