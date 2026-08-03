@@ -23,6 +23,15 @@ object DateUtil {
 
     fun getCurrentYearMonth(): String = monthFormat.format(Date())
 
+    /** 月份加减，如 "2026-08" + (-1) → "2026-07" */
+    fun shiftYearMonth(yearMonth: String, deltaMonths: Int): String {
+        val cal = Calendar.getInstance()
+        val date = monthFormat.parse(yearMonth) ?: return yearMonth
+        cal.time = date
+        cal.add(Calendar.MONTH, deltaMonths)
+        return monthFormat.format(cal.time)
+    }
+
     fun getMonthStartTime(yearMonth: String): Long {
         val cal = Calendar.getInstance()
         val date = monthFormat.parse(yearMonth)!!

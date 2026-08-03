@@ -2,7 +2,6 @@ package com.smartledger.ui.backup
 
 import android.app.Application
 import android.content.Context
-import android.os.Environment
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -10,7 +9,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -20,7 +18,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
@@ -35,27 +32,17 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.*
 
 data class BackupInfo(
     val fileName: String,
     val date: String,
     val size: String,
-    val recordCount: Int
+    val recordCount: Int,
+    val entry: com.smartledger.util.BackupStorage.Entry
 )
 
 class BackupViewModel(application: Application) : AndroidViewModel(application) {
     private val context = application
-
-    private fun backupDirs(): List<File> = listOf(
-        File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
-            "SmartLedger"
-        ),
-        File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "SmartLedger"),
-        File(context.filesDir, "SmartLedger")
-    )
 
     private val _backupHistory = MutableStateFlow<List<BackupInfo>>(emptyList())
     val backupHistory: StateFlow<List<BackupInfo>> = _backupHistory
@@ -75,28 +62,15 @@ class BackupViewModel(application: Application) : AndroidViewModel(application) 
 
     fun loadBackupHistory() {
         viewModelScope.launch(Dispatchers.IO) {
-            val files = mutableListOf<File>()
-            for (dir in backupDirs()) {
-                if (!dir.exists()) continue
-                dir.listFiles()?.filter { it.name.endsWith(".csv") }?.let { files.addAll(it) }
-            }
-            // 同名只保留最新修改的一份
-            val latestByName = files
-                .groupBy { it.name }
-                .mapValues { (_, list) -> list.maxByOrNull { it.lastModified() }!! }
-                .values
-                .sortedByDescending { it.lastModified() }
-
-            _backupHistory.value = latestByName.map { file ->
-                val date = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA)
-                    .format(Date(file.lastModified()))
-                val size = formatFileSize(file.length())
-                val lines = try {
-                    file.useLines { it.count() } - 1
-                } catch (_: Exception) {
-                    0
-                }
-                BackupInfo(file.name, date, size, lines.coerceAtLeast(0))
+            val entries = com.smartledger.util.BackupStorage.listBackups(context)
+            _backupHistory.value = entries.map { e ->
+                BackupInfo(
+                    fileName = e.fileName,
+                    date = com.smartledger.util.BackupStorage.formatDate(e.dateMs),
+                    size = com.smartledger.util.BackupStorage.formatSize(e.sizeBytes),
+                    recordCount = com.smartledger.util.BackupStorage.countCsvRecords(context, e),
+                    entry = e
+                )
             }
         }
     }
@@ -107,7 +81,11 @@ class BackupViewModel(application: Application) : AndroidViewModel(application) 
             val uri = CsvExporter.export(context)
             _isBackingUp.value = false
             if (uri != null) {
-                Toast.makeText(context, "备份成功", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    context,
+                    "备份成功，已保存到「下载/SmartLedger」（卸载后仍可恢复）",
+                    Toast.LENGTH_LONG
+                ).show()
                 loadBackupHistory()
             } else {
                 Toast.makeText(context, "备份失败：无数据或无法写入存储", Toast.LENGTH_SHORT).show()
@@ -115,12 +93,22 @@ class BackupViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun restore(context: Context, fileName: String) {
+    fun restore(context: Context, info: BackupInfo) {
         viewModelScope.launch {
             _isRestoring.value = true
-            val count = CsvImporter.restore(context, fileName)
+            val count = CsvImporter.restoreFromEntry(context, info.entry)
             _isRestoring.value = false
             _restoreResult.value = (count > 0) to count
+        }
+    }
+
+    fun restoreFromUri(context: Context, uri: android.net.Uri) {
+        viewModelScope.launch {
+            _isRestoring.value = true
+            val count = CsvImporter.restoreFromUri(context, uri)
+            _isRestoring.value = false
+            _restoreResult.value = (count > 0) to count
+            if (count > 0) loadBackupHistory()
         }
     }
 
@@ -128,21 +116,20 @@ class BackupViewModel(application: Application) : AndroidViewModel(application) 
         _restoreResult.value = null
     }
 
-    fun deleteBackup(fileName: String) {
+    fun deleteBackup(info: BackupInfo) {
         viewModelScope.launch(Dispatchers.IO) {
-            backupDirs().forEach { dir ->
-                val file = File(dir, fileName)
-                if (file.exists()) file.delete()
+            try {
+                if (info.entry.contentUri != null) {
+                    context.contentResolver.delete(info.entry.contentUri, null, null)
+                }
+                info.entry.file?.delete()
+                // 清理各目录同名文件
+                com.smartledger.util.BackupStorage.appFileDirs(context).forEach { dir ->
+                    File(dir, info.fileName).delete()
+                }
+            } catch (_: Exception) {
             }
             loadBackupHistory()
-        }
-    }
-
-    private fun formatFileSize(bytes: Long): String {
-        return when {
-            bytes < 1024 -> "$bytes B"
-            bytes < 1024 * 1024 -> "${bytes / 1024} KB"
-            else -> String.format("%.1f MB", bytes / 1024.0 / 1024.0)
         }
     }
 }
@@ -164,6 +151,21 @@ fun BackupScreen(
     var showRestoreConfirm by remember { mutableStateOf<BackupInfo?>(null) }
     // 删除确认弹窗
     var showDeleteConfirm by remember { mutableStateOf<BackupInfo?>(null) }
+
+    val openDocumentLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: Exception) {
+            }
+            viewModel.restoreFromUri(context, uri)
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(SmartLedgerColors.bg)) {
         LazyColumn(
@@ -245,14 +247,14 @@ fun BackupScreen(
                             if (first != null) {
                                 showRestoreConfirm = first
                             } else {
-                                Toast.makeText(context, "暂无备份文件", Toast.LENGTH_SHORT).show()
+                                openDocumentLauncher.launch(arrayOf("text/*", "text/csv", "*/*"))
                             }
                         },
                         modifier = Modifier
                             .weight(1f)
                             .height(48.dp),
                         shape = RoundedCornerShape(12.dp),
-                        enabled = !isRestoring && backupHistory.isNotEmpty()
+                        enabled = !isRestoring
                     ) {
                         if (isRestoring) {
                             CircularProgressIndicator(
@@ -261,10 +263,21 @@ fun BackupScreen(
                                 strokeWidth = 2.dp
                             )
                         } else {
-                            Text("恢复备份")
+                            Text(if (backupHistory.isEmpty()) "选择文件" else "恢复备份")
                         }
                     }
                 }
+            }
+
+            item { Spacer(modifier = Modifier.height(12.dp)) }
+
+            item {
+                Text(
+                    text = "备份保存在手机「下载/SmartLedger」目录，卸载重装后仍可在此恢复；也可点「选择文件」导入 CSV。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = SmartLedgerColors.fgSecondary,
+                    modifier = Modifier.padding(horizontal = 24.dp)
+                )
             }
 
             item { Spacer(modifier = Modifier.height(24.dp)) }
@@ -331,7 +344,7 @@ fun BackupScreen(
             confirmText = "开始恢复",
             onConfirm = {
                 showRestoreConfirm = null
-                viewModel.restore(context, backup.fileName)
+                viewModel.restore(context, backup)
             },
             dismissText = "取消"
         )
@@ -359,7 +372,7 @@ fun BackupScreen(
             confirmText = "删除",
             confirmColor = SmartLedgerColors.expense,
             onConfirm = {
-                viewModel.deleteBackup(backup.fileName)
+                viewModel.deleteBackup(backup)
                 showDeleteConfirm = null
             },
             dismissText = "取消"

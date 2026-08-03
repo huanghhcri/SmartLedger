@@ -3,15 +3,11 @@ package com.smartledger.util
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Environment
-import androidx.core.content.FileProvider
 import com.smartledger.data.db.AppDatabase
 import com.smartledger.data.db.entity.Category
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
-import java.io.File
-import java.io.FileWriter
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -40,16 +36,13 @@ object CsvExporter {
                 "SmartLedger_${dateFormat.format(Date())}.csv"
             }
 
-            exportToFile(context, transactions, categoryMap, fileName)
+            exportToStorage(context, transactions, categoryMap, fileName)
         } catch (e: Exception) {
             e.printStackTrace()
             null
         }
     }
 
-    /**
-     * 自定义时间范围导出
-     */
     suspend fun export(context: Context, startTime: Long, endTime: Long): Uri? = withContext(Dispatchers.IO) {
         try {
             val db = AppDatabase.getInstance(context)
@@ -60,68 +53,42 @@ object CsvExporter {
             if (transactions.isEmpty()) return@withContext null
 
             val dateFormat = SimpleDateFormat("yyyyMMdd", Locale.CHINA)
-            val fileName = "SmartLedger_${dateFormat.format(Date(startTime))}_${dateFormat.format(Date(endTime))}.csv"
+            val fileName =
+                "SmartLedger_${dateFormat.format(Date(startTime))}_${dateFormat.format(Date(endTime))}.csv"
 
-            exportToFile(context, transactions, categoryMap, fileName)
+            exportToStorage(context, transactions, categoryMap, fileName)
         } catch (e: Exception) {
             e.printStackTrace()
             null
         }
     }
 
-    private suspend fun exportToFile(
+    private fun exportToStorage(
         context: Context,
         transactions: List<com.smartledger.data.db.entity.Transaction>,
         categoryMap: Map<Long, Category>,
         fileName: String
-    ): Uri? = withContext(Dispatchers.IO) {
-        val file = resolveWritableFile(context, fileName) ?: return@withContext null
-        FileWriter(file).use { writer ->
-            writer.write("\uFEFF")
-            writer.write("日期,时间,类型,金额,分类,商户,支付方式,备注,来源\n")
+    ): Uri? {
+        val sb = StringBuilder()
+        sb.append('\uFEFF')
+        sb.append("日期,时间,类型,金额,分类,商户,支付方式,备注,来源\n")
 
-            val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.CHINA)
-            val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.CHINA)
+        val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.CHINA)
+        val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.CHINA)
 
-            for (t in transactions) {
-                val date = dateFormat.format(Date(t.transactionTime))
-                val time = timeFormat.format(Date(t.transactionTime))
-                val type = if (t.type == "expense") "支出" else "收入"
-                val category = t.categoryId?.let { categoryMap[it]?.name } ?: "未分类"
-                val merchant = escapeCsv(t.merchant ?: "")
-                val method = escapeCsv(t.paymentMethod ?: "")
-                val note = escapeCsv(t.note ?: "")
-                val source = if (t.source == "auto") "自动" else "手动"
-                writer.write("$date,$time,$type,${t.amount},$category,$merchant,$method,$note,$source\n")
-            }
+        for (t in transactions) {
+            val date = dateFormat.format(Date(t.transactionTime))
+            val time = timeFormat.format(Date(t.transactionTime))
+            val type = if (t.type == "expense") "支出" else "收入"
+            val category = t.categoryId?.let { categoryMap[it]?.name } ?: "未分类"
+            val merchant = escapeCsv(t.merchant ?: "")
+            val method = escapeCsv(t.paymentMethod ?: "")
+            val note = escapeCsv(t.note ?: "")
+            val source = if (t.source == "auto") "自动" else "手动"
+            sb.append("$date,$time,$type,${t.amount},$category,$merchant,$method,$note,$source\n")
         }
 
-        val authority = "${context.packageName}.fileprovider"
-        FileProvider.getUriForFile(context, authority, file)
-    }
-
-    /** 优先公共 Documents；失败则回退应用专属目录（Android 10+ 更稳） */
-    private fun resolveWritableFile(context: Context, fileName: String): File? {
-        val candidates = listOf(
-            File(
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
-                "SmartLedger"
-            ),
-            File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "SmartLedger"),
-            File(context.filesDir, "SmartLedger")
-        )
-        for (dir in candidates) {
-            try {
-                if (!dir.exists()) dir.mkdirs()
-                val file = File(dir, fileName)
-                // 探测可写
-                FileWriter(file, true).use { }
-                return file
-            } catch (_: Exception) {
-                // try next
-            }
-        }
-        return null
+        return BackupStorage.writeCsv(context, fileName, sb.toString())
     }
 
     private fun escapeCsv(value: String): String {

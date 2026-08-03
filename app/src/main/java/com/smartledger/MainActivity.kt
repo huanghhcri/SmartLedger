@@ -111,35 +111,24 @@ fun MainApp() {
         )
     }
 
-    // 重装恢复检测：首次启动 + 有备份文件 + 数据库为空
+    // 重装恢复：完成引导进入首页后，扫描「下载/SmartLedger」等持久目录
     var showRestoreDialog by remember { mutableStateOf(false) }
     var backupFileToRestore by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(isFirstLaunch) {
-        if (isFirstLaunch) {
-            val prefs = context.getSharedPreferences("smart_ledger", Context.MODE_PRIVATE)
-            val hasShownRestore = prefs.getBoolean("has_shown_restore_prompt", false)
-            if (!hasShownRestore) {
-                // 检查是否有备份文件
-                val backupDir = java.io.File(
-                    android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOCUMENTS),
-                    "SmartLedger"
-                )
-                val backupFiles = backupDir.listFiles()?.filter {
-                    it.name.endsWith(".csv") && it.name.startsWith("SmartLedger")
-                }?.sortedByDescending { it.lastModified() }
-
-                if (!backupFiles.isNullOrEmpty()) {
-                    // 检查数据库是否为空（重装后数据库是空的）
-                    val db = com.smartledger.data.db.AppDatabase.getInstance(context)
-                    val count = db.transactionDao().getCount()
-                    if (count == 0) {
-                        backupFileToRestore = backupFiles.first().name
-                        showRestoreDialog = true
-                    }
-                }
-                prefs.edit().putBoolean("has_shown_restore_prompt", true).apply()
+        // 等权限引导结束后再提示，避免被挡住
+        if (isFirstLaunch) return@LaunchedEffect
+        val prefs = context.getSharedPreferences("smart_ledger", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("has_shown_restore_prompt", false)) return@LaunchedEffect
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val latest = com.smartledger.util.BackupStorage.findLatest(context)
+            val db = com.smartledger.data.db.AppDatabase.getInstance(context)
+            val count = db.transactionDao().getCount()
+            if (latest != null && count == 0) {
+                backupFileToRestore = latest.fileName
+                showRestoreDialog = true
             }
         }
+        prefs.edit().putBoolean("has_shown_restore_prompt", true).apply()
     }
 
     // 权限状态（每次 resume 时刷新）
@@ -218,7 +207,8 @@ fun MainApp() {
 
     // 首次启动且权限未开启，跳转到权限引导
     LaunchedEffect(isFirstLaunch) {
-        if (isFirstLaunch && (!notificationListenerEnabled || !canDrawOverlays)) {
+        // 首次启动进入权限引导；悬浮窗非必须，避免卡死在引导页
+        if (isFirstLaunch) {
             navController.navigate("permission") {
                 popUpTo(Screen.Home.route) { inclusive = true }
             }

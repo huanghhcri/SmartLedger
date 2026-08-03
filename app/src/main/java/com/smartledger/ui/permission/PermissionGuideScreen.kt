@@ -7,7 +7,9 @@ import android.os.PowerManager
 import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -34,13 +36,16 @@ fun PermissionGuideScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // 权限状态
     var notificationListenerEnabled by remember { mutableStateOf(isNotificationListenerEnabled(context)) }
     var canDrawOverlays by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     var batteryOptimized by remember { mutableStateOf(isBatteryOptimizationIgnored(context)) }
-    var smsPermissionGranted by remember { mutableStateOf(
-        androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECEIVE_SMS) == android.content.pm.PackageManager.PERMISSION_GRANTED
-    ) }
+    var smsPermissionGranted by remember {
+        mutableStateOf(
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.RECEIVE_SMS
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        )
+    }
     var postNotificationsGranted by remember {
         mutableStateOf(isPostNotificationsGranted(context))
     }
@@ -51,36 +56,71 @@ fun PermissionGuideScreen(
         postNotificationsGranted = granted
     }
 
-    // 每次页面恢复时自动刷新权限状态
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 notificationListenerEnabled = isNotificationListenerEnabled(context)
                 canDrawOverlays = Settings.canDrawOverlays(context)
                 batteryOptimized = isBatteryOptimizationIgnored(context)
-                smsPermissionGranted = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECEIVE_SMS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                smsPermissionGranted = androidx.core.content.ContextCompat.checkSelfPermission(
+                    context, android.Manifest.permission.RECEIVE_SMS
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
                 postNotificationsGranted = isPostNotificationsGranted(context)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     Scaffold(
-        containerColor = SmartLedgerColors.bg
+        containerColor = SmartLedgerColors.bg,
+        bottomBar = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .background(SmartLedgerColors.bg)
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Button(
+                    onClick = onComplete,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = SmartLedgerColors.accent),
+                    enabled = notificationListenerEnabled
+                ) {
+                    Text(
+                        "完成设置，开始使用",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                }
+                TextButton(
+                    onClick = onComplete,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        if (notificationListenerEnabled) "进入软件"
+                        else "稍后设置，先手动记账",
+                        color = SmartLedgerColors.fgSecondary
+                    )
+                }
+            }
+        }
     ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Spacer(modifier = Modifier.height(8.dp))
 
-            // 欢迎卡片
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
@@ -129,7 +169,6 @@ fun PermissionGuideScreen(
                 modifier = Modifier.padding(top = 4.dp)
             )
 
-            // 4 项权限
             PermissionItem(
                 icon = Icons.Default.Notifications,
                 title = "通知使用权（必须）",
@@ -141,7 +180,7 @@ fun PermissionGuideScreen(
             PermissionItem(
                 icon = Icons.Default.Notifications,
                 title = "发送通知（推荐）",
-                description = "显示「检测到支出」与后台保活通知",
+                description = "显示记账成功与后台保活通知",
                 isGranted = postNotificationsGranted,
                 onClick = {
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
@@ -170,7 +209,7 @@ fun PermissionGuideScreen(
                 icon = Icons.Default.Add,
                 title = "自启动权限",
                 description = "允许App后台自启（vivo/iQOO必须）",
-                isGranted = false,  // 无法通过 API 检测，引导用户手动开启
+                isGranted = false,
                 onClick = { openAutoStartSettings(context) }
             )
 
@@ -182,39 +221,7 @@ fun PermissionGuideScreen(
                 onClick = { openBatteryOptimization(context) }
             )
 
-            Spacer(modifier = Modifier.weight(1f))
-
-            // 完成按钮：仅要求通知使用权（悬浮窗可选）
-            Button(
-                onClick = onComplete,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = SmartLedgerColors.accent),
-                enabled = notificationListenerEnabled
-            ) {
-                Text(
-                    "完成设置，开始使用",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp
-                )
-            }
-
-            // 跳过
-            if (!notificationListenerEnabled) {
-                TextButton(
-                    onClick = onComplete,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        "稍后设置，先手动记账",
-                        color = SmartLedgerColors.fgSecondary
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(16.dp))
         }
     }
 }
@@ -273,7 +280,7 @@ private fun PermissionItem(
             }
             if (isGranted) {
                 Icon(
-                    Icons.Default.Add,
+                    Icons.Default.Check,
                     contentDescription = "已开启",
                     tint = SmartLedgerColors.accent,
                     modifier = Modifier.size(24.dp)
@@ -289,8 +296,6 @@ private fun PermissionItem(
         }
     }
 }
-
-// ═══ 权限检测函数 ═══
 
 private fun isNotificationListenerEnabled(context: Context): Boolean {
     return com.smartledger.service.ListenerStatus.isEnabledInSettings(context)
@@ -308,8 +313,6 @@ private fun isBatteryOptimizationIgnored(context: Context): Boolean {
     val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
     return pm.isIgnoringBatteryOptimizations(context.packageName)
 }
-
-// ═══ 跳转函数 ═══
 
 private fun openNotificationListenerSettings(context: Context) {
     try {
@@ -376,14 +379,14 @@ private fun openBatteryOptimization(context: Context) {
 
 private fun requestSmsPermission(context: Context) {
     try {
-        val intent = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
             data = android.net.Uri.fromParts("package", context.packageName, null)
-            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(intent)
     } catch (e: Exception) {
-        context.startActivity(android.content.Intent(android.provider.Settings.ACTION_SETTINGS).apply {
-            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(Intent(Settings.ACTION_SETTINGS).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         })
     }
 }

@@ -11,6 +11,9 @@ import com.smartledger.util.DateUtil
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.launch
 
@@ -20,31 +23,57 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val repo = (application as SmartLedgerApp).transactionRepository
     private val categoryRepo = (application as SmartLedgerApp).categoryRepository
 
-    /** 跨日打开仍刷新「今日/本月」区间 */
+    /** 跨日打开仍刷新「今日」区间 */
     private val dateTick = MutableStateFlow(System.currentTimeMillis())
+
+    /** 当前查看的月份 yyyy-MM，可切换历史 */
+    private val _selectedYearMonth = MutableStateFlow(DateUtil.getCurrentYearMonth())
+    val selectedYearMonth: StateFlow<String> = _selectedYearMonth.asStateFlow()
 
     val todayExpense: Flow<Double> = dateTick.flatMapLatest {
         repo.getExpenseSum(DateUtil.getTodayStartTime(), DateUtil.getTodayEndTime())
     }
-    val monthExpense: Flow<Double> = dateTick.flatMapLatest {
-        val ym = DateUtil.getCurrentYearMonth()
-        repo.getExpenseSum(DateUtil.getMonthStartTime(ym), DateUtil.getMonthEndTime(ym))
-    }
-    val monthIncome: Flow<Double> = dateTick.flatMapLatest {
-        val ym = DateUtil.getCurrentYearMonth()
-        repo.getIncomeSum(DateUtil.getMonthStartTime(ym), DateUtil.getMonthEndTime(ym))
-    }
 
-    val recentTransactions: Flow<List<Transaction>> = dateTick.flatMapLatest {
-        val ym = DateUtil.getCurrentYearMonth()
-        repo.getByTimeRange(DateUtil.getMonthStartTime(ym), DateUtil.getMonthEndTime(ym))
-    }
+    val monthExpense: Flow<Double> = combine(dateTick, _selectedYearMonth) { _, ym -> ym }
+        .flatMapLatest { ym ->
+            repo.getExpenseSum(DateUtil.getMonthStartTime(ym), DateUtil.getMonthEndTime(ym))
+        }
+
+    val monthIncome: Flow<Double> = combine(dateTick, _selectedYearMonth) { _, ym -> ym }
+        .flatMapLatest { ym ->
+            repo.getIncomeSum(DateUtil.getMonthStartTime(ym), DateUtil.getMonthEndTime(ym))
+        }
+
+    val recentTransactions: Flow<List<Transaction>> =
+        combine(dateTick, _selectedYearMonth) { _, ym -> ym }
+            .flatMapLatest { ym ->
+                repo.getByTimeRange(DateUtil.getMonthStartTime(ym), DateUtil.getMonthEndTime(ym))
+            }
 
     val categories: Flow<List<Category>> = categoryRepo.getAll()
 
     fun refreshDateRange() {
         dateTick.value = System.currentTimeMillis()
     }
+
+    fun previousMonth() {
+        _selectedYearMonth.value = DateUtil.shiftYearMonth(_selectedYearMonth.value, -1)
+    }
+
+    fun nextMonth() {
+        val next = DateUtil.shiftYearMonth(_selectedYearMonth.value, 1)
+        // 不允许翻到未来月
+        if (next <= DateUtil.getCurrentYearMonth()) {
+            _selectedYearMonth.value = next
+        }
+    }
+
+    fun goToCurrentMonth() {
+        _selectedYearMonth.value = DateUtil.getCurrentYearMonth()
+    }
+
+    fun isCurrentMonth(): Boolean =
+        _selectedYearMonth.value == DateUtil.getCurrentYearMonth()
 
     fun getCategoryName(categoryId: Long?, categories: List<Category>): String {
         return categories.find { it.id == categoryId }?.name ?: "其他"

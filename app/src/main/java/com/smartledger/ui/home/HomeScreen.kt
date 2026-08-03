@@ -46,6 +46,8 @@ fun HomeScreen(
     val monthIncome by viewModel.monthIncome.collectAsState(initial = 0.0)
     val recentTransactions by viewModel.recentTransactions.collectAsState(initial = emptyList())
     val categories by viewModel.categories.collectAsState(initial = emptyList())
+    val selectedYearMonth by viewModel.selectedYearMonth.collectAsState()
+    val isCurrentMonth = selectedYearMonth == DateUtil.getCurrentYearMonth()
     val context = LocalContext.current
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
 
@@ -88,20 +90,35 @@ fun HomeScreen(
                 )
             }
 
-            item { Spacer(modifier = Modifier.height(24.dp)) }
+            item { Spacer(modifier = Modifier.height(16.dp)) }
 
-            // 本月支出大字 + 收入/结余
+            // 月份切换：可查看历史记账
+            item {
+                MonthSwitcher(
+                    yearMonth = selectedYearMonth,
+                    isCurrentMonth = isCurrentMonth,
+                    onPrevious = { viewModel.previousMonth() },
+                    onNext = { viewModel.nextMonth() },
+                    onGoCurrent = { viewModel.goToCurrentMonth() }
+                )
+            }
+
+            item { Spacer(modifier = Modifier.height(16.dp)) }
+
+            // 本月/所选月支出大字 + 收入/结余
             item {
                 BalanceSection(
                     monthExpense = monthExpense,
                     monthIncome = monthIncome,
-                    todayExpense = todayExpense
+                    todayExpense = todayExpense,
+                    yearMonthLabel = selectedYearMonth,
+                    isCurrentMonth = isCurrentMonth
                 )
             }
 
             item { Spacer(modifier = Modifier.height(24.dp)) }
 
-            // 最近交易标题
+            // 交易标题
             item {
                 Row(
                     modifier = Modifier
@@ -111,7 +128,7 @@ fun HomeScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "最近交易",
+                        text = if (isCurrentMonth) "最近交易" else "${selectedYearMonth} 交易",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = SmartLedgerColors.fg
@@ -356,10 +373,55 @@ private fun HeaderSection(
 // ═══════════════════════════════════════════════════════
 
 @Composable
+private fun MonthSwitcher(
+    yearMonth: String,
+    isCurrentMonth: Boolean,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onGoCurrent: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(SmartLedgerColors.surface)
+            .padding(horizontal = 4.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        IconButton(onClick = onPrevious) {
+            Icon(
+                Icons.Filled.ChevronLeft,
+                contentDescription = "上一月",
+                tint = SmartLedgerColors.fg
+            )
+        }
+        TextButton(onClick = onGoCurrent) {
+            Text(
+                text = if (isCurrentMonth) "$yearMonth（本月）" else yearMonth,
+                fontWeight = FontWeight.SemiBold,
+                color = SmartLedgerColors.fg
+            )
+        }
+        IconButton(onClick = onNext, enabled = !isCurrentMonth) {
+            Icon(
+                Icons.Filled.ChevronRight,
+                contentDescription = "下一月",
+                tint = if (isCurrentMonth) SmartLedgerColors.fgSecondary.copy(alpha = 0.4f)
+                else SmartLedgerColors.fg
+            )
+        }
+    }
+}
+
+@Composable
 private fun BalanceSection(
     monthExpense: Double,
     monthIncome: Double,
-    todayExpense: Double
+    todayExpense: Double,
+    yearMonthLabel: String = DateUtil.getCurrentYearMonth(),
+    isCurrentMonth: Boolean = true
 ) {
     val balance = monthIncome - monthExpense
 
@@ -368,9 +430,9 @@ private fun BalanceSection(
             .fillMaxWidth()
             .padding(horizontal = 20.dp)
     ) {
-        // 本月支出标签
+        // 支出标签
         Text(
-            text = "本月支出",
+            text = if (isCurrentMonth) "本月支出" else "${yearMonthLabel} 支出",
             style = MaterialTheme.typography.bodySmall,
             color = SmartLedgerColors.fgSecondary
         )
@@ -454,16 +516,17 @@ private fun BalanceSection(
                 )
             }
 
-            // 今日支出
+            // 今日支出（仅查看本月时有意义）
             Column(horizontalAlignment = Alignment.End) {
                 Text(
-                    text = "今日支出",
+                    text = if (isCurrentMonth) "今日支出" else "当月笔数",
                     style = MaterialTheme.typography.labelMedium,
                     color = SmartLedgerColors.fgSecondary
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "¥${CurrencyUtil.format(todayExpense)}",
+                    text = if (isCurrentMonth) "¥${CurrencyUtil.format(todayExpense)}"
+                    else "—",
                     style = MaterialTheme.typography.titleMedium.copy(
                         fontFamily = FontFamily.Monospace
                     ),
