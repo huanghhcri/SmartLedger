@@ -23,8 +23,8 @@ object BackupStorage {
 
     private const val TAG = "BackupStorage"
     private const val RELATIVE_DIR = "SmartLedger"
-    private const val DOWNLOADS_REL =
-        "${Environment.DIRECTORY_DOWNLOADS}/$RELATIVE_DIR"
+    /** MediaStore RELATIVE_PATH，须为编译期常量拼接形式 */
+    private const val DOWNLOADS_REL = "Download/SmartLedger"
 
     data class Entry(
         val fileName: String,

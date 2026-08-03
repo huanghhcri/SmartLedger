@@ -42,7 +42,7 @@ object CsvImporter {
     }
 
     private suspend fun restoreFromReader(context: Context, reader: BufferedReader): Int {
-        try {
+        return try {
             val db = AppDatabase.getInstance(context)
             val categories = db.categoryDao().getAllOnce()
             val categoryMap = categories.associateBy { "${it.type}:${it.name}" }
