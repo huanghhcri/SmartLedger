@@ -37,6 +37,14 @@ interface TransactionDao {
     @Query("SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE type = 'income' AND transactionTime BETWEEN :startTime AND :endTime")
     fun getIncomeSum(startTime: Long, endTime: Long): Flow<Double>
 
+    /** 全部支出合计（不限月份） */
+    @Query("SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE type = 'expense'")
+    fun getTotalExpenseSum(): Flow<Double>
+
+    /** 全部收入合计（不限月份） */
+    @Query("SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE type = 'income'")
+    fun getTotalIncomeSum(): Flow<Double>
+
     @Query("SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE type = 'expense' AND categoryId = :categoryId AND transactionTime BETWEEN :startTime AND :endTime")
     fun getExpenseByCategory(categoryId: Long, startTime: Long, endTime: Long): Flow<Double>
 

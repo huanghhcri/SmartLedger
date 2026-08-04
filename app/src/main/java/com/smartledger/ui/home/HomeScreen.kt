@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -27,6 +28,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.smartledger.data.db.entity.Category
 import com.smartledger.data.db.entity.Transaction
+import com.smartledger.ui.components.SmartLedgerInputDialog
 import com.smartledger.ui.theme.SmartLedgerColors
 import com.smartledger.util.CurrencyUtil
 import com.smartledger.util.DateUtil
@@ -44,6 +46,10 @@ fun HomeScreen(
     val todayExpense by viewModel.todayExpense.collectAsState(initial = 0.0)
     val monthExpense by viewModel.monthExpense.collectAsState(initial = 0.0)
     val monthIncome by viewModel.monthIncome.collectAsState(initial = 0.0)
+    val totalBalance by viewModel.totalBalance.collectAsState()
+    val initialBalance by viewModel.initialBalance.collectAsState()
+    val totalIncome by viewModel.totalIncome.collectAsState(initial = 0.0)
+    val totalExpense by viewModel.totalExpense.collectAsState(initial = 0.0)
     val recentTransactions by viewModel.recentTransactions.collectAsState(initial = emptyList())
     val categories by viewModel.categories.collectAsState(initial = emptyList())
     val selectedYearMonth by viewModel.selectedYearMonth.collectAsState()
@@ -71,6 +77,8 @@ fun HomeScreen(
     var showEditDialog by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showCategorySelect by remember { mutableStateOf(false) }
+    var showInitialBalanceDialog by remember { mutableStateOf(false) }
+    var initialBalanceInput by remember { mutableStateOf("") }
 
     Box(modifier = Modifier.fillMaxSize().background(SmartLedgerColors.bg)) {
         LazyColumn(
@@ -87,6 +95,27 @@ fun HomeScreen(
                     onMenuToggle = { showMenu = it },
                     onNavigateToSearch = onNavigateToSearch,
                     onExport = onExport
+                )
+            }
+
+            item { Spacer(modifier = Modifier.height(16.dp)) }
+
+            // 总余额：期初 + 全部收入 - 全部支出
+            item {
+                TotalBalanceCard(
+                    totalBalance = totalBalance,
+                    initialBalance = initialBalance,
+                    cumulativeNet = totalIncome - totalExpense,
+                    onClick = {
+                        initialBalanceInput = if (initialBalance == 0.0) {
+                            ""
+                        } else if (initialBalance == initialBalance.toLong().toDouble()) {
+                            initialBalance.toLong().toString()
+                        } else {
+                            String.format("%.2f", initialBalance)
+                        }
+                        showInitialBalanceDialog = true
+                    }
                 )
             }
 
@@ -257,6 +286,28 @@ fun HomeScreen(
         )
     }
 
+    // ═══ 设置期初余额 ═══
+    if (showInitialBalanceDialog) {
+        SmartLedgerInputDialog(
+            onDismissRequest = { showInitialBalanceDialog = false },
+            title = "设置期初余额",
+            label = "开始记账前已有的钱",
+            value = initialBalanceInput,
+            onValueChange = { raw ->
+                if (raw.isEmpty() || raw.matches(Regex("^-?\\d{0,9}(\\.\\d{0,2})?$"))) {
+                    initialBalanceInput = raw
+                }
+            },
+            prefix = "¥",
+            confirmText = "保存",
+            onConfirm = {
+                val amount = initialBalanceInput.toDoubleOrNull() ?: 0.0
+                viewModel.setInitialBalance(amount)
+                showInitialBalanceDialog = false
+            }
+        )
+    }
+
     // ═══ 编辑账单弹窗 ═══
     if (showEditDialog && editingTransaction != null) {
         EditTransactionDialog(
@@ -364,6 +415,103 @@ private fun HeaderSection(
                     color = SmartLedgerColors.fg
                 )
             }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════
+// 总余额：期初 + 累计收入 - 累计支出
+// ═══════════════════════════════════════════════════════
+
+@Composable
+private fun TotalBalanceCard(
+    totalBalance: Double,
+    initialBalance: Double,
+    cumulativeNet: Double,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = SmartLedgerColors.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(SmartLedgerColors.accentDim),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Outlined.AccountBalanceWallet,
+                            contentDescription = null,
+                            tint = SmartLedgerColors.accent,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "总余额",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = SmartLedgerColors.fg
+                    )
+                }
+                Text(
+                    text = "设置期初",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = SmartLedgerColors.accent
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    text = "¥",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = SmartLedgerColors.fgSecondary,
+                    modifier = Modifier.padding(bottom = 2.dp)
+                )
+                Text(
+                    text = CurrencyUtil.format(totalBalance),
+                    style = MaterialTheme.typography.displayLarge.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 32.sp,
+                        letterSpacing = (-1).sp
+                    ),
+                    color = when {
+                        totalBalance > 0 -> SmartLedgerColors.income
+                        totalBalance < 0 -> SmartLedgerColors.expense
+                        else -> SmartLedgerColors.fg
+                    }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = buildString {
+                    append("期初 ¥${CurrencyUtil.format(initialBalance)}")
+                    append("  ·  记账结余 ")
+                    if (cumulativeNet >= 0) append("+")
+                    append("¥${CurrencyUtil.format(cumulativeNet)}")
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = SmartLedgerColors.fgSecondary
+            )
         }
     }
 }

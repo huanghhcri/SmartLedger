@@ -28,6 +28,10 @@ class TransactionRepository(private val dao: TransactionDao) {
     fun getIncomeSum(startTime: Long, endTime: Long): Flow<Double> =
         dao.getIncomeSum(startTime, endTime)
 
+    fun getTotalExpenseSum(): Flow<Double> = dao.getTotalExpenseSum()
+
+    fun getTotalIncomeSum(): Flow<Double> = dao.getTotalIncomeSum()
+
     fun getExpenseByCategory(categoryId: Long, startTime: Long, endTime: Long): Flow<Double> =
         dao.getExpenseByCategory(categoryId, startTime, endTime)
 
