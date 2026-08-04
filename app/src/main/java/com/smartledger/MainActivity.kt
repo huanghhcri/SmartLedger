@@ -568,10 +568,11 @@ fun MainApp() {
             confirmText = null,
             dismissText = "",
             content = {
-                Spacer(modifier = Modifier.height(12.dp))
                 LinearProgressIndicator(
                     progress = downloadProgress / 100f,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp),
                     color = SmartLedgerColors.accent,
                     trackColor = SmartLedgerColors.border
                 )

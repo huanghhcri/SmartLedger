@@ -66,15 +66,22 @@ fun SmartLedgerDialog(
             )
         },
         text = {
-            if (text != null) {
-                Text(
-                    text,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = SmartLedgerColors.fgSecondary
-                )
-            }
-            if (content != null) {
-                Column { content() }
+            // 必须包一层 Column：AlertDialog 的 text 槽位不是纵向布局，
+            // 否则文案与 progress 等 content 会叠在一起被「压扁」
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                if (text != null) {
+                    Text(
+                        text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = SmartLedgerColors.fgSecondary
+                    )
+                }
+                if (content != null) {
+                    content()
+                }
             }
         },
         confirmButton = {

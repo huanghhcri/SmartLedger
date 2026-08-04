@@ -55,6 +55,10 @@ class ListenerRebindWorker(
 
             // 检测失效：能重连则静默恢复；否则打标，打开 App 再提示
             val invalid = ListenerStatus.checkAndRecoverIfNeeded(ctx)
+            if (invalid && ListenerStatus.isEnabledInSettings(ctx)) {
+                ListenerStatus.forceReconnect(ctx)
+            }
+            KeepAliveService.refreshNotification(ctx)
             Log.d("ListenerRebind", "permission check done, invalid=$invalid")
             Result.success()
         } catch (e: Exception) {

@@ -43,6 +43,12 @@ fun SettingsScreen(
     var debugToastsEnabled by remember {
         mutableStateOf(prefs.getBoolean("debug_toasts", false))
     }
+    var confirmUncertain by remember {
+        mutableStateOf(prefs.getBoolean("confirm_uncertain", true))
+    }
+    var confirmAllAuto by remember {
+        mutableStateOf(prefs.getBoolean("confirm_all_auto", false))
+    }
 
     // 检查更新状态（版本号读安装包，勿写死）
     val appVersionLabel = remember {
@@ -190,6 +196,28 @@ fun SettingsScreen(
                     colors = CardDefaults.cardColors(containerColor = SmartLedgerColors.surface)
                 ) {
                     Column {
+                        SwitchItem(
+                            icon = Icons.Outlined.Info,
+                            label = "模糊账单需确认",
+                            description = "金额截断、券类推送等不确定时，先弹窗确认并可改金额",
+                            checked = confirmUncertain,
+                            onCheckedChange = { enabled ->
+                                confirmUncertain = enabled
+                                prefs.edit().putBoolean("confirm_uncertain", enabled).apply()
+                            }
+                        )
+                        DividerLine()
+                        SwitchItem(
+                            icon = Icons.Outlined.Info,
+                            label = "全部自动记账需确认",
+                            description = "微信/支付宝/银行卡等所有识别结果都先确认再入账",
+                            checked = confirmAllAuto,
+                            onCheckedChange = { enabled ->
+                                confirmAllAuto = enabled
+                                prefs.edit().putBoolean("confirm_all_auto", enabled).apply()
+                            }
+                        )
+                        DividerLine()
                         MenuSettingItem(
                             icon = Icons.Outlined.Notifications,
                             label = "通知使用权",
@@ -418,10 +446,11 @@ fun SettingsScreen(
             confirmText = null,
             dismissText = "",
             content = {
-                Spacer(modifier = Modifier.height(12.dp))
                 LinearProgressIndicator(
                     progress = downloadProgress / 100f,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp),
                     color = SmartLedgerColors.accent,
                     trackColor = SmartLedgerColors.border
                 )

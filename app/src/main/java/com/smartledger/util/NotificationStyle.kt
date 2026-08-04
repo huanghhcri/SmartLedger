@@ -23,8 +23,10 @@ object NotificationStyle {
     const val CHANNEL_FLOATING = "floating_window_channel"
 
     private const val ID_PAYMENT_BASE = 2001
+    private const val ID_CONFIRM_BASE = 3001
     const val ID_KEEP_ALIVE = 1002
     const val ID_FLOATING = 1001
+    const val CHANNEL_CONFIRM = "payment_confirm"
 
     fun ensureChannels(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -38,6 +40,19 @@ object NotificationStyle {
             ).apply {
                 description = "自动记账成功后的提醒"
                 enableVibration(false)
+                setShowBadge(true)
+                lightColor = ContextCompat.getColor(context, R.color.accent)
+            }
+        )
+
+        manager.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_CONFIRM,
+                "账单确认",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "模糊或可疑账单，需确认后才记入"
+                enableVibration(true)
                 setShowBadge(true)
                 lightColor = ContextCompat.getColor(context, R.color.accent)
             }
@@ -146,12 +161,62 @@ object NotificationStyle {
     }
 
     /**
+     * 模糊账单：点击打开确认页（可改金额）。
+     */
+    fun notifyNeedsConfirm(
+        context: Context,
+        pendingId: Long,
+        amount: Double,
+        paymentMethod: String,
+        reason: String?
+    ) {
+        ensureChannels(context)
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        val amountText = if (amount > 0) "¥${String.format("%.2f", amount)}" else "金额待确认"
+        val detail = buildString {
+            append(paymentMethod)
+            if (!reason.isNullOrBlank()) {
+                append(" · ")
+                append(reason)
+            }
+            append(" · 点此确认或修改后入账")
+        }
+        val intent = Intent(context, com.smartledger.ConfirmPaymentActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(com.smartledger.ConfirmPaymentActivity.EXTRA_PENDING_ID, pendingId)
+        }
+        val pi = PendingIntent.getActivity(
+            context,
+            (ID_CONFIRM_BASE + pendingId).toInt(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(context, CHANNEL_CONFIRM)
+            .setSmallIcon(R.drawable.ic_stat_notification)
+            .setColor(accentColor(context))
+            .setContentTitle("待确认 $amountText")
+            .setContentText(detail)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .build()
+        manager.notify(ID_CONFIRM_BASE + (pendingId % 100000).toInt(), notification)
+    }
+
+    fun cancelConfirm(context: Context, pendingId: Long) {
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        manager.cancel(ID_CONFIRM_BASE + (pendingId % 100000).toInt())
+    }
+
+    /**
      * 保活前台通知（低调、与主页语气一致）
      */
     fun buildKeepAlive(context: Context, connected: Boolean): Notification {
         ensureChannels(context)
         val text = if (connected) {
-            "正在自动记录微信 / 支付宝支付"
+            "正在自动记录微信 / 支付宝 / 银行卡"
         } else {
             "监听已断开，正在尝试恢复"
         }
@@ -163,6 +228,7 @@ object NotificationStyle {
             .setContentIntent(openAppPendingIntent(context, ID_KEEP_ALIVE))
             .setOngoing(true)
             .setSilent(true)
+            .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()

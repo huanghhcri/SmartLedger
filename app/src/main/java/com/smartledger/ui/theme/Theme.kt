@@ -163,6 +163,8 @@ object ThemeManager {
 
 @Composable
 fun SmartLedgerTheme(
+    /** 半透明确认页等场景勿改状态栏，避免与系统遮罩违和 */
+    syncSystemBars: Boolean = true,
     content: @Composable () -> Unit
 ) {
     val themeMode by ThemeManager.themeMode
@@ -189,7 +191,7 @@ fun SmartLedgerTheme(
 
     // 状态栏颜色（仅 Activity 场景；悬浮窗等非 Activity Context 不可强转）
     val view = LocalView.current
-    if (!view.isInEditMode) {
+    if (syncSystemBars && !view.isInEditMode) {
         SideEffect {
             val activity = view.context as? Activity ?: return@SideEffect
             activity.window.statusBarColor = extendedColors.background.toArgb()

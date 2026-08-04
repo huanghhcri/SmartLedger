@@ -1,7 +1,6 @@
 package com.smartledger.service
 
 import android.app.Notification
-import android.content.ComponentName
 import android.os.Handler
 import android.os.Looper
 import android.service.notification.NotificationListenerService
@@ -94,27 +93,28 @@ class PaymentNotificationListener : NotificationListenerService() {
         Log.d(TAG, "Listener connected")
         ListenerStatus.setConnected(applicationContext, true)
         ListenerStatus.clearPendingInAppPrompt(applicationContext)
-        // 连接成功后顺带拉起保活前台服务
+        // 连接成功后顺带拉起保活前台服务，并刷新通知文案
         KeepAliveService.start(applicationContext)
+        KeepAliveService.refreshNotification(applicationContext)
     }
 
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
         Log.w(TAG, "Listener disconnected, will requestRebind")
         ListenerStatus.setConnected(applicationContext, false)
-        // 延迟重绑，避免系统瞬时抖动时连打 requestRebind
+        KeepAliveService.refreshNotification(applicationContext)
+        KeepAliveService.start(applicationContext)
+        // 延迟重绑；失败时 KeepAlive 周期巡检会继续尝试 / 组件开关强恢复
         mainHandler.postDelayed({
-            try {
-                val cn = ComponentName(
-                    applicationContext,
-                    PaymentNotificationListener::class.java
-                )
-                NotificationListenerService.requestRebind(cn)
-                Log.d(TAG, "requestRebind after disconnect")
-            } catch (e: Exception) {
-                Log.e(TAG, "requestRebind failed", e)
-            }
+            ListenerStatus.requestRebind(applicationContext, force = true)
         }, 1500L)
+        mainHandler.postDelayed({
+            if (!ListenerStatus.isConnected(applicationContext) &&
+                ListenerStatus.isEnabledInSettings(applicationContext)
+            ) {
+                ListenerStatus.forceReconnect(applicationContext)
+            }
+        }, 8000L)
     }
 
     override fun onDestroy() {
@@ -175,23 +175,36 @@ class PaymentNotificationListener : NotificationListenerService() {
         Log.d(TAG, "hasExpenseKeyword=$hasExpenseKeyword, hasIncomeKeyword=$hasIncomeKeyword")
 
         val isMonitoredApp = isMonitoredPackage(packageName)
+        val isBankPkg = isBankPackage(packageName)
         val isShopping = packageName.contains("jingdong") || packageName.contains("jd.jr") ||
             packageName.contains("jdlite") || packageName.contains("taobao") ||
             packageName.contains("tmall")
 
         // 正文含银行/动账/支付确认等也处理（覆盖未列入包名的银行 App）
-        val isBankRelated = text.contains("银行") || text.contains("工商") || text.contains("邮政") ||
+        val isBankRelated = isBankPkg ||
+                text.contains("银行") || text.contains("工商") || text.contains("邮政") ||
                 text.contains("工行") || text.contains("邮储") || text.contains("建设") ||
                 text.contains("中国银行") || text.contains("农业") || text.contains("招商") ||
                 text.contains("动账通知") || text.contains("交易提醒") ||
-                text.contains("支付信息确认") || text.contains("储蓄卡") || text.contains("借记卡")
+                text.contains("支付信息确认") || text.contains("储蓄卡") || text.contains("借记卡") ||
+                Regex("尾号\\d{4}卡").containsMatchIn(text)
 
-        Log.d(TAG, "isMonitoredApp=$isMonitoredApp, isBankRelated=$isBankRelated")
+        Log.d(TAG, "isMonitoredApp=$isMonitoredApp, isBankRelated=$isBankRelated, isBankPkg=$isBankPkg")
 
-        // 金额：含「元」或裸数字金额（通知截断时常无「元」）
+        // 银行类：必须有动账信号，禁止营销/余额/还款提醒误记
+        if (isBankRelated &&
+            !NotificationParser.hasBankLedgerSignal(text) &&
+            !NotificationParser.hasStrongPaymentSignal(text)
+        ) {
+            Log.d(TAG, "Bank-related without ledger signal, skip: $text")
+            return
+        }
+
+        // 金额：含「元」或裸数字（工行截断：支出(...)35....）
         val hasAmount = text.contains("元") || text.contains("￥") || text.contains("¥") ||
                 Regex("支付\\s*[\\d.]+").containsMatchIn(text) ||
-                Regex("支出\\([^)]*\\)[\\d.]+").containsMatchIn(text)
+                Regex("支出\\([^)]*\\)\\s*[\\d.]+").containsMatchIn(text) ||
+                Regex("消费\\([^)]*\\)\\s*[\\d.]+").containsMatchIn(text)
 
         val isChatPay = packageName == "com.tencent.mm" ||
             packageName.contains("AlipayGphone") ||
@@ -206,8 +219,9 @@ class PaymentNotificationListener : NotificationListenerService() {
 
         if (!hasExpenseKeyword && !hasIncomeKeyword) {
             Log.d(TAG, "No keywords found, checking if monitored app with amount...")
-            // 电商/聊天 App 无支付确认时绝不能仅凭「带元」进入解析
-            if (isShopping || isChatPay || !(isMonitoredApp && hasAmount)) {
+            // 银行动账截断可能只有「支出(...)35」；其它仍需关键词或强信号
+            val bankOk = isBankRelated && NotificationParser.hasBankLedgerSignal(text) && hasAmount
+            if (isShopping || isChatPay || (!bankOk && !(isMonitoredApp && hasAmount))) {
                 Log.d(TAG, "Not monitored app or no amount (or promo app), skipping")
                 return
             }
@@ -233,93 +247,142 @@ class PaymentNotificationListener : NotificationListenerService() {
             return
         }
 
-        Log.d(TAG, "Parsed: amount=${parsed.amount}, merchant=${parsed.merchant}, method=${parsed.paymentMethod}, type=${parsed.type}")
+        Log.d(
+            TAG,
+            "Parsed: amount=${parsed.amount}, merchant=${parsed.merchant}, " +
+                "method=${parsed.paymentMethod}, type=${parsed.type}, confidence=${parsed.confidence}"
+        )
 
         // 调试模式下弹出提示（文案与主页语气一致）
         if (isDebugEnabled()) {
             android.os.Handler(android.os.Looper.getMainLooper()).post {
                 val typeLabel = if (parsed.type == "income") "收入" else "支出"
+                val conf = if (parsed.confidence == ParseConfidence.UNCERTAIN) " · 待确认" else ""
                 android.widget.Toast.makeText(
                     applicationContext,
-                    "$typeLabel ¥${String.format("%.2f", parsed.amount)} · ${parsed.paymentMethod}",
+                    "$typeLabel ¥${String.format("%.2f", parsed.amount)} · ${parsed.paymentMethod}$conf",
                     android.widget.Toast.LENGTH_SHORT
                 ).show()
             }
         }
 
+        // 模糊 / 全部需确认：先弹确认，确认前不落库
+        if (shouldAskConfirm(parsed)) {
+            askUserConfirm(parsed, postTime)
+            return
+        }
+
         scope.launch {
             try {
-                val db = AppDatabase.getInstance(applicationContext)
-
-                // ═══ 统一去重（金额转分 + 时间窗）═══
-                val amountCents = com.smartledger.util.CurrencyUtil.toCents(parsed.amount)
-                val duplicate = DedupHelper.findDuplicate(
-                    db.transactionDao(),
-                    amountCents,
-                    parsed.type,
-                    parsed.merchant,
-                    parsed.paymentMethod,
-                    postTime
-                )
-
-                if (duplicate != null) {
-                    Log.d(TAG, "Duplicate: existing=${duplicate.paymentMethod}, new=${parsed.paymentMethod}, amount=${parsed.amount}")
-                    DedupHelper.mergeIfDuplicate(db.transactionDao(), duplicate, parsed.paymentMethod, parsed.merchant)
-                    return@launch
-                }
-
-                val transaction = Transaction(
-                    amount = parsed.amount,
-                    type = parsed.type,
-                    categoryId = null,
-                    merchant = parsed.merchant,
-                    paymentMethod = parsed.paymentMethod,
-                    note = null,
-                    source = "auto",
-                    notificationKey = parsed.notificationKey,
-                    transactionTime = postTime  // 使用通知发布时间
-                )
-                val id = db.transactionDao().insert(transaction)
-                Log.d(TAG, "Transaction saved: id=$id, type=${parsed.type}")
-
-                // 智能分类
-                try {
-                    val categories = db.categoryDao().getAllOnce()
-                    val categoryId = SmartCategorizer.categorize(
-                        merchant = parsed.merchant,
-                        paymentMethod = parsed.paymentMethod,
-                        note = null,
-                        categories = categories,
-                        type = parsed.type
-                    )
-                    if (categoryId != null) {
-                        val savedTransaction = db.transactionDao().getById(id)
-                        if (savedTransaction != null) {
-                            db.transactionDao().update(savedTransaction.copy(categoryId = categoryId))
-                            val categoryName = categories.find { it.id == categoryId }?.name
-                            Log.d(TAG, "Auto categorized: $categoryName (id=$categoryId)")
-                        }
-                    } else {
-                        Log.d(TAG, "No category match for merchant: ${parsed.merchant}")
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Auto categorize failed", e)
-                }
-
-                // 发系统通知（统一主页风格）
-                com.smartledger.util.NotificationStyle.notifyPaymentDetected(
-                    applicationContext,
-                    parsed.amount,
-                    parsed.merchant,
-                    parsed.paymentMethod,
-                    parsed.type,
-                    id
-                )
-
+                saveAutoTransaction(parsed, postTime)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to save transaction", e)
             }
         }
+    }
+
+    /** 设置：模糊需确认（默认开）；或全部自动记账都确认 */
+    private fun shouldAskConfirm(parsed: ParsedPayment): Boolean {
+        val prefs = getSharedPreferences("smart_ledger", MODE_PRIVATE)
+        if (prefs.getBoolean("confirm_all_auto", false)) return true
+        if (!prefs.getBoolean("confirm_uncertain", true)) return false
+        return parsed.confidence == ParseConfidence.UNCERTAIN
+    }
+
+    private fun askUserConfirm(parsed: ParsedPayment, postTime: Long) {
+        val pendingId = PendingConfirmStore.put(
+            amount = parsed.amount,
+            type = parsed.type,
+            merchant = parsed.merchant,
+            paymentMethod = parsed.paymentMethod,
+            notificationKey = parsed.notificationKey,
+            transactionTime = postTime,
+            reason = parsed.uncertainReason ?: "识别结果不够确定",
+            rawSnippet = parsed.rawSnippet
+        )
+        Log.d(TAG, "Ask confirm pendingId=$pendingId reason=${parsed.uncertainReason}")
+        com.smartledger.util.NotificationStyle.notifyNeedsConfirm(
+            applicationContext,
+            pendingId,
+            parsed.amount,
+            parsed.paymentMethod,
+            parsed.uncertainReason
+        )
+        try {
+            val intent = android.content.Intent(
+                applicationContext,
+                com.smartledger.ConfirmPaymentActivity::class.java
+            ).apply {
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                putExtra(com.smartledger.ConfirmPaymentActivity.EXTRA_PENDING_ID, pendingId)
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            // 部分机型后台禁弹 Activity：仍可通过「待确认」通知点开
+            Log.w(TAG, "Confirm activity blocked, use notification tap", e)
+        }
+    }
+
+    private suspend fun saveAutoTransaction(parsed: ParsedPayment, postTime: Long) {
+        val db = AppDatabase.getInstance(applicationContext)
+
+        val amountCents = com.smartledger.util.CurrencyUtil.toCents(parsed.amount)
+        val duplicate = DedupHelper.findDuplicate(
+            db.transactionDao(),
+            amountCents,
+            parsed.type,
+            parsed.merchant,
+            parsed.paymentMethod,
+            postTime
+        )
+
+        if (duplicate != null) {
+            Log.d(TAG, "Duplicate: existing=${duplicate.paymentMethod}, new=${parsed.paymentMethod}, amount=${parsed.amount}")
+            DedupHelper.mergeIfDuplicate(db.transactionDao(), duplicate, parsed.paymentMethod, parsed.merchant)
+            return
+        }
+
+        val transaction = Transaction(
+            amount = parsed.amount,
+            type = parsed.type,
+            categoryId = null,
+            merchant = parsed.merchant,
+            paymentMethod = parsed.paymentMethod,
+            note = null,
+            source = "auto",
+            notificationKey = parsed.notificationKey,
+            transactionTime = postTime
+        )
+        val id = db.transactionDao().insert(transaction)
+        Log.d(TAG, "Transaction saved: id=$id, type=${parsed.type}")
+
+        try {
+            val categories = db.categoryDao().getAllOnce()
+            val categoryId = SmartCategorizer.categorize(
+                merchant = parsed.merchant,
+                paymentMethod = parsed.paymentMethod,
+                note = null,
+                categories = categories,
+                type = parsed.type
+            )
+            if (categoryId != null) {
+                val savedTransaction = db.transactionDao().getById(id)
+                if (savedTransaction != null) {
+                    db.transactionDao().update(savedTransaction.copy(categoryId = categoryId))
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Auto categorize failed", e)
+        }
+
+        com.smartledger.util.NotificationStyle.notifyPaymentDetected(
+            applicationContext,
+            parsed.amount,
+            parsed.merchant,
+            parsed.paymentMethod,
+            parsed.type,
+            id
+        )
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {}
@@ -383,6 +446,11 @@ class PaymentNotificationListener : NotificationListenerService() {
         if (BANK_PACKAGE_HINTS.any { packageName.contains(it, ignoreCase = true) }) return true
         if (packageName.contains("jd.jr") || packageName.contains("jingdong")) return true
         return false
+    }
+
+    private fun isBankPackage(packageName: String): Boolean {
+        if (packageName in BANK_PACKAGES) return true
+        return BANK_PACKAGE_HINTS.any { packageName.contains(it, ignoreCase = true) }
     }
 
     private fun isDebugEnabled(): Boolean {

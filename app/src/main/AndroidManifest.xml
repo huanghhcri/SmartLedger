@@ -42,6 +42,15 @@
             </intent-filter>
         </activity>
 
+        <!-- 模糊/可疑账单确认（可改金额） -->
+        <activity
+            android:name=".ConfirmPaymentActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/Theme.SmartLedger.Confirm" />
+
         <!-- 通知监听服务：系统跨 UID 绑定，exported 需为 true -->
         <service
             android:name=".service.PaymentNotificationListener"

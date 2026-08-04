@@ -19,6 +19,16 @@ class SmartLedgerApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // 主题与主界面一致，供确认弹窗等独立 Activity 使用
+        val prefs = getSharedPreferences("smart_ledger", MODE_PRIVATE)
+        val savedTheme = prefs.getString("theme_mode", "SYSTEM")
+        com.smartledger.ui.theme.ThemeManager.init(
+            try {
+                com.smartledger.ui.theme.ThemeMode.valueOf(savedTheme ?: "SYSTEM")
+            } catch (_: Exception) {
+                com.smartledger.ui.theme.ThemeMode.SYSTEM
+            }
+        )
         // 进程冷启动后 binder 状态未知，先标未连接；
         // PaymentNotificationListener.onListenerConnected 成功后再标为已连接
         ListenerStatus.setConnected(this, false)

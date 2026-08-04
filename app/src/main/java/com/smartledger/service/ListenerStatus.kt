@@ -48,6 +48,11 @@ object ListenerStatus {
         }
         editor.apply()
         Log.d(TAG, "connected=$connected")
+        // 同步刷新保活通知文案，避免一直停在「监听已断开」
+        try {
+            KeepAliveService.refreshNotification(context)
+        } catch (_: Exception) {
+        }
     }
 
     fun markEverEnabled(context: Context) {
@@ -96,6 +101,37 @@ object ListenerStatus {
     }
 
     fun requestRebindIfNeeded(context: Context): Boolean = requestRebind(context, force = false)
+
+    /**
+     * 强恢复：先 disable/enable 监听组件再 requestRebind。
+     * 仅在设置里仍勾选「通知使用权」时有效；部分机型 requestRebind  alone 无效时用此兜底。
+     */
+    fun forceReconnect(context: Context): Boolean {
+        if (!isEnabledInSettings(context)) {
+            setConnected(context, false)
+            return false
+        }
+        return try {
+            val pm = context.packageManager
+            val cn = ComponentName(context, PaymentNotificationListener::class.java)
+            pm.setComponentEnabledSetting(
+                cn,
+                PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.DONT_KILL_APP
+            )
+            pm.setComponentEnabledSetting(
+                cn,
+                PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+                PackageManager.DONT_KILL_APP
+            )
+            NotificationListenerService.requestRebind(cn)
+            Log.d(TAG, "forceReconnect: component toggled + requestRebind")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "forceReconnect failed", e)
+            false
+        }
+    }
 
     /**
      * 检测版本升级：更新后系统会撤销通知使用权，打标供下次打开 App 时提示。
