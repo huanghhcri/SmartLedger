@@ -213,12 +213,18 @@ object NotificationStyle {
     /**
      * 保活前台通知（低调、与主页语气一致）
      */
-    fun buildKeepAlive(context: Context, connected: Boolean): Notification {
+    fun buildKeepAlive(
+        context: Context,
+        state: com.smartledger.service.ListenerStatus.DisplayState
+    ): Notification {
         ensureChannels(context)
-        val text = if (connected) {
-            "正在自动记录微信 / 支付宝 / 银行卡"
-        } else {
-            "监听已断开，正在尝试恢复"
+        val text = when (state) {
+            com.smartledger.service.ListenerStatus.DisplayState.CONNECTED ->
+                "正在自动记录微信 / 支付宝 / 银行卡"
+            com.smartledger.service.ListenerStatus.DisplayState.NEED_PERMISSION ->
+                "请开启通知使用权后才能自动记账"
+            com.smartledger.service.ListenerStatus.DisplayState.RECOVERING ->
+                "正在重新连接支付监听…"
         }
         return NotificationCompat.Builder(context, CHANNEL_KEEP_ALIVE)
             .setSmallIcon(R.drawable.ic_stat_notification)
@@ -232,6 +238,17 @@ object NotificationStyle {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
+    }
+
+    /** 兼容旧调用 */
+    fun buildKeepAlive(context: Context, connected: Boolean): Notification {
+        val state = when {
+            connected -> com.smartledger.service.ListenerStatus.DisplayState.CONNECTED
+            com.smartledger.service.ListenerStatus.isEnabledInSettings(context) ->
+                com.smartledger.service.ListenerStatus.DisplayState.RECOVERING
+            else -> com.smartledger.service.ListenerStatus.DisplayState.NEED_PERMISSION
+        }
+        return buildKeepAlive(context, state)
     }
 
     fun buildForegroundPlaceholder(context: Context, text: String): Notification {

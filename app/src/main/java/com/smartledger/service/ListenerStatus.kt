@@ -1,11 +1,15 @@
 package com.smartledger.service
 
+import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.util.Log
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 通知监听连接状态：区分「设置里已勾选」与「binder 是否真正连着」。
@@ -13,6 +17,7 @@ import android.util.Log
  * 说明（Android 系统限制）：
  * - 安装 / 覆盖更新后，系统会撤销通知使用权，应用无法静默恢复，必须用户重新打开一次。
  * - 进程被杀、binder 断开但设置仍勾选时，可用 requestRebind 自动恢复，无需用户操作。
+ * - 禁止频繁 disable/enable 监听组件，部分机型会导致永久断连。
  */
 object ListenerStatus {
 
@@ -22,25 +27,46 @@ object ListenerStatus {
     private const val KEY_LAST_VERSION = "last_version_code"
     private const val KEY_SHOW_AFTER_UPDATE = "show_nls_after_update"
     private const val KEY_EVER_ENABLED = "nls_ever_enabled"
-    /** 后台巡检发现失效后，等用户打开 App 再弹应用内提示 */
     private const val KEY_PENDING_IN_APP_PROMPT = "nls_pending_in_app_prompt"
+    private const val KEY_LAST_FORCE_RECONNECT = "nls_last_force_reconnect"
 
     /** 设置里已关闭 */
     const val PROMPT_DISABLED = "disabled"
     /** 设置仍开着但连接断开 */
     const val PROMPT_RECONNECT = "reconnect"
 
+    /** 进程内实时状态，避免仅依赖 SharedPreferences 误判 */
+    private val binderConnected = AtomicBoolean(false)
+    private val lastForceAt = AtomicLong(0L)
+
     fun isEnabledInSettings(context: Context): Boolean {
+        // API 27+：官方接口更可靠
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            try {
+                val nm = context.getSystemService(NotificationManager::class.java)
+                val cn = ComponentName(context, PaymentNotificationListener::class.java)
+                if (nm != null && nm.isNotificationListenerAccessGranted(cn)) {
+                    return true
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "isNotificationListenerAccessGranted failed", e)
+            }
+        }
         val flat = Settings.Secure.getString(
             context.contentResolver,
             "enabled_notification_listeners"
         )
         if (flat.isNullOrEmpty()) return false
-        return flat.contains(context.packageName) &&
-            flat.contains("PaymentNotificationListener")
+        val pkg = context.packageName
+        return flat.contains(pkg) && (
+            flat.contains("PaymentNotificationListener") ||
+                flat.contains("$pkg/.service.PaymentNotificationListener") ||
+                flat.contains("$pkg/com.smartledger.service.PaymentNotificationListener")
+            )
     }
 
     fun setConnected(context: Context, connected: Boolean) {
+        binderConnected.set(connected)
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val editor = prefs.edit().putBoolean(KEY_CONNECTED, connected)
         if (connected) {
@@ -48,11 +74,21 @@ object ListenerStatus {
         }
         editor.apply()
         Log.d(TAG, "connected=$connected")
-        // 同步刷新保活通知文案，避免一直停在「监听已断开」
         try {
             KeepAliveService.refreshNotification(context)
         } catch (_: Exception) {
         }
+    }
+
+    /**
+     * 收到任意支付相关通知即证明 binder 已通，用于自愈「假断开」文案。
+     */
+    fun markAliveFromNotification(context: Context) {
+        if (!binderConnected.get()) {
+            Log.d(TAG, "heal: notification received → mark connected")
+        }
+        setConnected(context, true)
+        clearPendingInAppPrompt(context)
     }
 
     fun markEverEnabled(context: Context) {
@@ -62,10 +98,6 @@ object ListenerStatus {
             .apply()
     }
 
-    /**
-     * 是否应对「权限失效」做提醒：曾开启过、或更新后待重开、或设置里仍勾着。
-     * 首次安装尚未引导完成的用户不打扰。
-     */
     fun shouldMonitorPermission(context: Context): Boolean {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         if (prefs.getBoolean("first_launch", true)) return false
@@ -75,14 +107,29 @@ object ListenerStatus {
     }
 
     fun isConnected(context: Context): Boolean {
+        if (binderConnected.get()) return true
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getBoolean(KEY_CONNECTED, false)
     }
 
     /**
-     * @param force true 时即使本地标记已连接也 requestRebind（定时巡检用）
-     * @return 是否已发起 rebind
+     * 保活通知用的展示态（比单纯 isConnected 更准确）。
      */
+    enum class DisplayState {
+        /** 设置未开 */
+        NEED_PERMISSION,
+        /** 已连接 */
+        CONNECTED,
+        /** 设置已开，正在重连 */
+        RECOVERING
+    }
+
+    fun displayState(context: Context): DisplayState {
+        if (!isEnabledInSettings(context)) return DisplayState.NEED_PERMISSION
+        if (isConnected(context)) return DisplayState.CONNECTED
+        return DisplayState.RECOVERING
+    }
+
     fun requestRebind(context: Context, force: Boolean = false): Boolean {
         if (!isEnabledInSettings(context)) {
             setConnected(context, false)
@@ -91,6 +138,8 @@ object ListenerStatus {
         if (!force && isConnected(context)) return false
         return try {
             val cn = ComponentName(context, PaymentNotificationListener::class.java)
+            // 确保组件处于启用（曾被误 disable 时恢复）
+            ensureComponentEnabled(context, cn)
             NotificationListenerService.requestRebind(cn)
             Log.d(TAG, "requestRebind issued force=$force")
             true
@@ -102,13 +151,40 @@ object ListenerStatus {
 
     fun requestRebindIfNeeded(context: Context): Boolean = requestRebind(context, force = false)
 
+    private fun ensureComponentEnabled(context: Context, cn: ComponentName) {
+        try {
+            val pm = context.packageManager
+            val state = pm.getComponentEnabledSetting(cn)
+            if (state == PackageManager.COMPONENT_ENABLED_STATE_DISABLED ||
+                state == PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER ||
+                state == PackageManager.COMPONENT_ENABLED_STATE_DISABLED_UNTIL_USED
+            ) {
+                pm.setComponentEnabledSetting(
+                    cn,
+                    PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+                    PackageManager.DONT_KILL_APP
+                )
+                Log.w(TAG, "NLS component was disabled, re-enabled")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "ensureComponentEnabled failed", e)
+        }
+    }
+
     /**
-     * 强恢复：先 disable/enable 监听组件再 requestRebind。
-     * 仅在设置里仍勾选「通知使用权」时有效；部分机型 requestRebind  alone 无效时用此兜底。
+     * 强恢复：仅作最后手段，且全局限流（默认 30 分钟最多一次）。
+     * 频繁 toggle 组件会在部分机型上导致监听永久失效。
      */
-    fun forceReconnect(context: Context): Boolean {
+    fun forceReconnect(context: Context, bypassCooldown: Boolean = false): Boolean {
         if (!isEnabledInSettings(context)) {
             setConnected(context, false)
+            return false
+        }
+        val now = System.currentTimeMillis()
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val last = maxOf(lastForceAt.get(), prefs.getLong(KEY_LAST_FORCE_RECONNECT, 0L))
+        if (!bypassCooldown && now - last < 30 * 60 * 1000L) {
+            Log.d(TAG, "forceReconnect skipped (cooldown)")
             return false
         }
         return try {
@@ -119,12 +195,17 @@ object ListenerStatus {
                 PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
                 PackageManager.DONT_KILL_APP
             )
+            // 稍等再启用，给系统消化 disable
+            Thread.sleep(400)
             pm.setComponentEnabledSetting(
                 cn,
                 PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
                 PackageManager.DONT_KILL_APP
             )
+            Thread.sleep(200)
             NotificationListenerService.requestRebind(cn)
+            lastForceAt.set(now)
+            prefs.edit().putLong(KEY_LAST_FORCE_RECONNECT, now).apply()
             Log.d(TAG, "forceReconnect: component toggled + requestRebind")
             true
         } catch (e: Exception) {
@@ -133,16 +214,11 @@ object ListenerStatus {
         }
     }
 
-    /**
-     * 检测版本升级：更新后系统会撤销通知使用权，打标供下次打开 App 时提示。
-     * @return true 表示刚发生升级
-     */
     fun checkAppUpdated(context: Context): Boolean {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val current = currentVersionCode(context)
         val last = prefs.getLong(KEY_LAST_VERSION, -1L)
         if (last < 0) {
-            // 首次记录，不弹「更新」提示
             prefs.edit().putLong(KEY_LAST_VERSION, current).apply()
             return false
         }
@@ -166,11 +242,9 @@ object ListenerStatus {
         setConnected(context, false)
     }
 
-    /** 是否应展示「更新后请重新开启通知使用权」 */
     fun shouldPromptAfterUpdate(context: Context): Boolean {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         if (!prefs.getBoolean(KEY_SHOW_AFTER_UPDATE, false)) return false
-        // 用户已重新开启则清掉标记
         if (isEnabledInSettings(context)) {
             clearAfterUpdatePrompt(context)
             return false
@@ -185,17 +259,13 @@ object ListenerStatus {
             .apply()
     }
 
-    /**
-     * 后台巡检：能恢复则静默重连；失效只打标，等用户打开 App 再弹窗（不发系统通知）。
-     * @return true 表示当前处于失效状态
-     */
     fun checkAndRecoverIfNeeded(context: Context): Boolean {
         if (isEnabledInSettings(context)) {
             markEverEnabled(context)
             if (!isConnected(context)) {
                 requestRebind(context, force = true)
                 try {
-                    Thread.sleep(3000)
+                    Thread.sleep(2500)
                 } catch (_: InterruptedException) {
                     Thread.currentThread().interrupt()
                 }
@@ -232,7 +302,6 @@ object ListenerStatus {
             .apply()
     }
 
-    /** 取出并清除「打开 App 后再提示」标记；无则返回 null */
     fun consumePendingInAppPrompt(context: Context): String? {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val reason = prefs.getString(KEY_PENDING_IN_APP_PROMPT, null) ?: return null
@@ -243,7 +312,7 @@ object ListenerStatus {
     private fun currentVersionCode(context: Context): Long {
         return try {
             val info = context.packageManager.getPackageInfo(context.packageName, 0)
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 info.longVersionCode
             } else {
                 @Suppress("DEPRECATION")

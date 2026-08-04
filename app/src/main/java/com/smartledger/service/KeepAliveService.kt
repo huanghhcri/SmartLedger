@@ -12,14 +12,16 @@ import android.util.Log
 import com.smartledger.util.NotificationStyle
 
 /**
- * 前台保活：防止 OEM 杀进程后 NotificationListenerService 长期无法收到回调。
- * 周期巡检连接状态，刷新通知文案，并在断开时 requestRebind / forceReconnect。
+ * 前台保活 + 监听重连巡检。
+ * 仅使用 requestRebind；不强行反复 toggle 组件（会导致部分机型永久断连）。
  */
 class KeepAliveService : Service() {
 
     companion object {
         private const val TAG = "KeepAlive"
-        private const val RECOVER_INTERVAL_MS = 90_000L
+        /** 未连上时更勤快；已连上则放慢 */
+        private const val RECOVER_FAST_MS = 20_000L
+        private const val RECOVER_SLOW_MS = 120_000L
 
         fun start(context: Context) {
             try {
@@ -41,15 +43,13 @@ class KeepAliveService : Service() {
             }
         }
 
-        /** 连接状态变化时刷新保活通知文案（无需重启 Service） */
         fun refreshNotification(context: Context) {
             try {
                 val nm = context.getSystemService(android.app.NotificationManager::class.java)
                     ?: return
-                val connected = ListenerStatus.isConnected(context)
                 nm.notify(
                     NotificationStyle.ID_KEEP_ALIVE,
-                    NotificationStyle.buildKeepAlive(context, connected)
+                    NotificationStyle.buildKeepAlive(context, ListenerStatus.displayState(context))
                 )
             } catch (e: Exception) {
                 Log.w(TAG, "refreshNotification failed", e)
@@ -62,10 +62,11 @@ class KeepAliveService : Service() {
 
     private val recoverRunnable = object : Runnable {
         override fun run() {
+            var next = RECOVER_SLOW_MS
             try {
-                tickRecover()
+                next = tickRecover()
             } finally {
-                handler.postDelayed(this, RECOVER_INTERVAL_MS)
+                handler.postDelayed(this, next)
             }
         }
     }
@@ -78,8 +79,12 @@ class KeepAliveService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         promoteForeground()
+        // 立刻尝试一次重绑，再进入周期巡检
+        if (ListenerStatus.isEnabledInSettings(this) && !ListenerStatus.isConnected(this)) {
+            ListenerStatus.requestRebind(this, force = true)
+        }
         handler.removeCallbacks(recoverRunnable)
-        handler.postDelayed(recoverRunnable, 5_000L)
+        handler.postDelayed(recoverRunnable, 3_000L)
         Log.d(TAG, "KeepAlive foreground running")
         return START_STICKY
     }
@@ -94,7 +99,7 @@ class KeepAliveService : Service() {
     private fun promoteForeground() {
         val notification = NotificationStyle.buildKeepAlive(
             this,
-            ListenerStatus.isConnected(this)
+            ListenerStatus.displayState(this)
         )
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -117,29 +122,30 @@ class KeepAliveService : Service() {
         }
     }
 
-    private fun tickRecover() {
-        val enabled = ListenerStatus.isEnabledInSettings(this)
-        val connected = ListenerStatus.isConnected(this)
+    /** @return 下次巡检间隔 */
+    private fun tickRecover(): Long {
         refreshNotification(this)
 
-        if (!enabled) {
+        if (!ListenerStatus.isEnabledInSettings(this)) {
             failStreak = 0
-            Log.d(TAG, "NLS not enabled in settings, skip rebind")
-            return
+            Log.d(TAG, "NLS not enabled in settings")
+            return RECOVER_SLOW_MS
         }
 
-        if (connected) {
+        if (ListenerStatus.isConnected(this)) {
             failStreak = 0
-            return
+            return RECOVER_SLOW_MS
         }
 
         failStreak++
-        Log.w(TAG, "NLS disconnected, recover attempt #$failStreak")
+        Log.w(TAG, "NLS recovering, attempt #$failStreak")
         ListenerStatus.requestRebind(this, force = true)
 
-        // requestRebind 多次无效时，用组件开关强拉 binder（设置里仍勾选时有效）
-        if (failStreak >= 2) {
-            ListenerStatus.forceReconnect(this)
+        // 仅在连续失败较久后，且受冷却限制下尝试一次强恢复
+        if (failStreak == 6) {
+            ListenerStatus.forceReconnect(this, bypassCooldown = false)
         }
+
+        return RECOVER_FAST_MS
     }
 }

@@ -93,7 +93,7 @@ class PaymentNotificationListener : NotificationListenerService() {
         Log.d(TAG, "Listener connected")
         ListenerStatus.setConnected(applicationContext, true)
         ListenerStatus.clearPendingInAppPrompt(applicationContext)
-        // 连接成功后顺带拉起保活前台服务，并刷新通知文案
+        ListenerStatus.clearAfterUpdatePrompt(applicationContext)
         KeepAliveService.start(applicationContext)
         KeepAliveService.refreshNotification(applicationContext)
     }
@@ -104,27 +104,26 @@ class PaymentNotificationListener : NotificationListenerService() {
         ListenerStatus.setConnected(applicationContext, false)
         KeepAliveService.refreshNotification(applicationContext)
         KeepAliveService.start(applicationContext)
-        // 延迟重绑；失败时 KeepAlive 周期巡检会继续尝试 / 组件开关强恢复
+        // 只 requestRebind，不要短时间 forceReconnect（会拆组件导致一直断开）
         mainHandler.postDelayed({
             ListenerStatus.requestRebind(applicationContext, force = true)
         }, 1500L)
         mainHandler.postDelayed({
-            if (!ListenerStatus.isConnected(applicationContext) &&
-                ListenerStatus.isEnabledInSettings(applicationContext)
-            ) {
-                ListenerStatus.forceReconnect(applicationContext)
-            }
-        }, 8000L)
+            ListenerStatus.requestRebind(applicationContext, force = true)
+        }, 6000L)
     }
 
     override fun onDestroy() {
-        ListenerStatus.setConnected(applicationContext, false)
+        // 服务销毁 ≠ 权限撤销；勿标断开，否则冷启动/组件抖动会一直显示「已断开」
         scope.cancel()
         super.onDestroy()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         sbn ?: return
+
+        // 能收到通知 = binder 已连接（修复误标断开）
+        ListenerStatus.markAliveFromNotification(applicationContext)
 
         val packageName = sbn.packageName
         val notification = sbn.notification ?: return
