@@ -128,8 +128,29 @@ object UpdateChecker {
         }
     }
 
+    private fun apkCacheFiles(context: Context, info: UpdateInfo): Triple<File, File, File> {
+        val dir = File(context.cacheDir, "apk").apply { mkdirs() }
+        val safeName = info.versionName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        val outFile = File(dir, "SmartLedger-$safeName.apk")
+        val tmp = File(dir, "SmartLedger-$safeName.tmp")
+        val meta = File(dir, "SmartLedger-$safeName.len")
+        return Triple(outFile, tmp, meta)
+    }
+
     /**
-     * 应用内下载 APK 到缓存目录。
+     * 本地未完成下载的进度（0～99）；无缓存返回 0。
+     */
+    fun partialDownloadPercent(context: Context, info: UpdateInfo): Int {
+        if (info.apkUrl.isNullOrBlank()) return 0
+        val (_, tmp, meta) = apkCacheFiles(context, info)
+        if (!tmp.exists() || tmp.length() <= 0L) return 0
+        val total = meta.takeIf { it.exists() }?.readText()?.trim()?.toLongOrNull() ?: return 0
+        if (total <= 0L) return 0
+        return ((tmp.length() * 100) / total).toInt().coerceIn(0, 99)
+    }
+
+    /**
+     * 应用内下载 APK 到缓存目录；失败保留 .tmp，下次用 HTTP Range 断点续传。
      * @param onProgress 0～100
      */
     suspend fun downloadApk(
@@ -142,9 +163,7 @@ object UpdateChecker {
             return@withContext DownloadResult.NeedBrowser(info.htmlUrl)
         }
         try {
-            val dir = File(context.cacheDir, "apk").apply { mkdirs() }
-            val safeName = info.versionName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
-            val outFile = File(dir, "SmartLedger-$safeName.apk")
+            val (outFile, tmp, meta) = apkCacheFiles(context, info)
 
             // 已下过完整包则复用（>1MB）
             if (outFile.exists() && outFile.length() > 1_000_000L) {
@@ -152,55 +171,129 @@ object UpdateChecker {
                 return@withContext DownloadResult.Success(outFile)
             }
 
-            val conn = openDownloadConnection(apkUrl)
+            var existing = if (tmp.exists()) tmp.length().coerceAtLeast(0L) else 0L
+            val knownTotal = meta.takeIf { it.exists() }?.readText()?.trim()?.toLongOrNull() ?: 0L
+            if (existing > 0L && knownTotal > 0L) {
+                val pct = ((existing * 100) / knownTotal).toInt().coerceIn(0, 99)
+                withContext(Dispatchers.Main) { onProgress(pct) }
+            }
+
+            val conn = openDownloadConnection(apkUrl, if (existing > 0L) existing else null)
             val code = conn.responseCode
+
+            // 416：本地片段无效，清空后整包重下
+            if (code == 416 && existing > 0L) {
+                conn.disconnect()
+                tmp.delete()
+                meta.delete()
+                existing = 0L
+                return@withContext downloadApk(context, info, onProgress)
+            }
+
             if (code !in 200..299) {
                 conn.disconnect()
                 return@withContext DownloadResult.Failed("下载失败（HTTP $code）")
             }
 
-            val total = conn.contentLengthLong.coerceAtLeast(0L)
-            val tmp = File(dir, "SmartLedger-$safeName.tmp")
-            if (tmp.exists()) tmp.delete()
-
-            conn.inputStream.use { input ->
-                FileOutputStream(tmp).use { output ->
-                    val buf = ByteArray(8192)
-                    var readTotal = 0L
-                    var lastPct = -1
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        output.write(buf, 0, n)
-                        readTotal += n
-                        if (total > 0) {
-                            val pct = ((readTotal * 100) / total).toInt().coerceIn(0, 100)
-                            if (pct != lastPct) {
-                                lastPct = pct
-                                withContext(Dispatchers.Main) { onProgress(pct) }
-                            }
-                        }
+            val append: Boolean
+            val total: Long
+            when (code) {
+                206 -> {
+                    append = true
+                    total = parseContentRangeTotal(conn.getHeaderField("Content-Range"))
+                        ?: (existing + conn.contentLengthLong.coerceAtLeast(0L))
+                }
+                else -> {
+                    // 200：不支持 Range 或首下；丢弃旧片段从 0 开始
+                    if (existing > 0L) {
+                        Log.w(TAG, "server returned 200 for Range request, restart full download")
+                        tmp.delete()
+                        existing = 0L
                     }
-                    output.flush()
+                    append = false
+                    total = conn.contentLengthLong.coerceAtLeast(0L)
                 }
             }
-            conn.disconnect()
 
-            if (outFile.exists()) outFile.delete()
-            if (!tmp.renameTo(outFile)) {
-                tmp.copyTo(outFile, overwrite = true)
-                tmp.delete()
+            if (total > 0L) {
+                meta.writeText(total.toString())
             }
+            if (existing > 0L && total > 0L && existing >= total) {
+                conn.disconnect()
+                // 本地已完整，直接收尾
+                finalizeApk(tmp, outFile, meta)
+                withContext(Dispatchers.Main) { onProgress(100) }
+                return@withContext DownloadResult.Success(outFile)
+            }
+
+            var readTotal = existing
+            var lastPct = if (total > 0L) {
+                ((readTotal * 100) / total).toInt().coerceIn(0, 99)
+            } else -1
+            if (lastPct >= 0) {
+                withContext(Dispatchers.Main) { onProgress(lastPct) }
+            }
+
+            try {
+                conn.inputStream.use { input ->
+                    FileOutputStream(tmp, append).use { output ->
+                        val buf = ByteArray(8192)
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            output.write(buf, 0, n)
+                            readTotal += n
+                            if (total > 0L) {
+                                val pct = ((readTotal * 100) / total).toInt().coerceIn(0, 100)
+                                if (pct != lastPct) {
+                                    lastPct = pct
+                                    withContext(Dispatchers.Main) { onProgress(pct) }
+                                }
+                            }
+                        }
+                        output.flush()
+                    }
+                }
+            } finally {
+                conn.disconnect()
+            }
+
+            if (total > 0L && tmp.length() < total) {
+                val pct = ((tmp.length() * 100) / total).toInt().coerceIn(0, 99)
+                return@withContext DownloadResult.Failed("下载中断（已完成 ${pct}%），可点重新下载继续")
+            }
+
+            finalizeApk(tmp, outFile, meta)
             withContext(Dispatchers.Main) { onProgress(100) }
             Log.d(TAG, "APK downloaded: ${outFile.absolutePath} size=${outFile.length()}")
             DownloadResult.Success(outFile)
         } catch (e: Exception) {
             Log.e(TAG, "downloadApk failed", e)
+            // 保留 .tmp，供下次 Range 续传
             DownloadResult.Failed("下载失败：${e.message ?: "网络异常"}")
         }
     }
 
-    private fun openDownloadConnection(apkUrl: String): HttpURLConnection {
+    private fun finalizeApk(tmp: File, outFile: File, meta: File) {
+        if (outFile.exists()) outFile.delete()
+        if (!tmp.renameTo(outFile)) {
+            tmp.copyTo(outFile, overwrite = true)
+            tmp.delete()
+        }
+        if (meta.exists()) meta.delete()
+    }
+
+    /** Content-Range: bytes 0-99/1234 → 1234 */
+    private fun parseContentRangeTotal(header: String?): Long? {
+        if (header.isNullOrBlank()) return null
+        val slash = header.lastIndexOf('/')
+        if (slash < 0 || slash >= header.length - 1) return null
+        val totalPart = header.substring(slash + 1).trim()
+        if (totalPart == "*") return null
+        return totalPart.toLongOrNull()?.takeIf { it > 0L }
+    }
+
+    private fun openDownloadConnection(apkUrl: String, resumeFrom: Long?): HttpURLConnection {
         var currentUrl = apkUrl
         // 跟随重定向（GitHub → objects.githubusercontent.com）
         repeat(5) {
@@ -208,6 +301,9 @@ object UpdateChecker {
             conn.instanceFollowRedirects = false
             conn.setRequestProperty("User-Agent", "SmartLedger-Android")
             conn.setRequestProperty("Accept", "application/octet-stream")
+            if (resumeFrom != null && resumeFrom > 0L) {
+                conn.setRequestProperty("Range", "bytes=$resumeFrom-")
+            }
             conn.connectTimeout = 15000
             conn.readTimeout = 60000
             val code = conn.responseCode

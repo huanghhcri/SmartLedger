@@ -28,10 +28,12 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.smartledger.data.db.entity.Category
 import com.smartledger.data.db.entity.Transaction
+import com.smartledger.ui.components.PaymentChannelPicker
 import com.smartledger.ui.components.SmartLedgerInputDialog
 import com.smartledger.ui.theme.SmartLedgerColors
 import com.smartledger.util.CurrencyUtil
 import com.smartledger.util.DateUtil
+import com.smartledger.util.PaymentMethods
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 
@@ -877,6 +879,12 @@ private fun EditTransactionDialog(
     var amountText by remember { mutableStateOf(CurrencyUtil.toEditableString(transaction.amount)) }
     var merchant by remember { mutableStateOf(transaction.merchant ?: "") }
     var note by remember { mutableStateOf(transaction.note ?: "") }
+    var paymentMethod by remember {
+        mutableStateOf(
+            transaction.paymentMethod?.takeIf { it.isNotBlank() }
+                ?: PaymentMethods.PRESETS.first()
+        )
+    }
     var selectedCategoryId by remember { mutableStateOf(transaction.categoryId) }
     val typeCategories = remember(categories, transaction.type) {
         categories.filter { it.type == transaction.type }
@@ -928,6 +936,11 @@ private fun EditTransactionDialog(
                         cursorColor = SmartLedgerColors.accent
                     )
                 )
+                // 渠道
+                PaymentChannelPicker(
+                    selected = paymentMethod,
+                    onSelected = { paymentMethod = it }
+                )
                 // 分类选择
                 Text("分类", style = MaterialTheme.typography.labelMedium, color = SmartLedgerColors.fgSecondary)
                 FlowRow(
@@ -960,6 +973,7 @@ private fun EditTransactionDialog(
                                 amount = amount,
                                 merchant = merchant.ifBlank { null },
                                 note = note.ifBlank { null },
+                                paymentMethod = paymentMethod.trim().ifBlank { "其他" },
                                 categoryId = selectedCategoryId
                             )
                         )

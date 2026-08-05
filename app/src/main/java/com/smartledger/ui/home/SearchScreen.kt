@@ -49,7 +49,7 @@ fun SearchScreen(
     }
 
     // 支付方式列表
-    val paymentMethods = listOf("微信", "支付宝", "云闪付", "现金", "银行卡")
+    val paymentMethods = com.smartledger.util.PaymentMethods.PRESETS
 
     // 应用筛选
     val filteredResults = searchResults.filter { t ->

@@ -63,6 +63,50 @@ fun SettingsScreen(
     var downloadProgress by remember { mutableStateOf(0) }
     var pendingInstallFile by remember { mutableStateOf<java.io.File?>(null) }
     val coroutineScope = rememberCoroutineScope()
+    fun startApkDownload(info: com.smartledger.util.UpdateChecker.UpdateInfo) {
+        updateError = null
+        isDownloadingUpdate = true
+        downloadProgress =
+            com.smartledger.util.UpdateChecker.partialDownloadPercent(context, info)
+        coroutineScope.launch {
+            when (val result =
+                com.smartledger.util.UpdateChecker.downloadApk(context, info) { p ->
+                    downloadProgress = p
+                }
+            ) {
+                is com.smartledger.util.UpdateChecker.DownloadResult.Success -> {
+                    isDownloadingUpdate = false
+                    updateResult = null
+                    val ok = com.smartledger.util.UpdateChecker.installApk(
+                        context, result.apkFile
+                    )
+                    if (!ok) {
+                        pendingInstallFile = result.apkFile
+                        Toast.makeText(
+                            context,
+                            "请允许安装未知应用后点「继续安装」",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        Toast.makeText(
+                            context,
+                            "请按提示完成安装",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+                is com.smartledger.util.UpdateChecker.DownloadResult.NeedBrowser -> {
+                    isDownloadingUpdate = false
+                    com.smartledger.util.UpdateChecker.openDownloadPage(context, info)
+                    updateResult = null
+                }
+                is com.smartledger.util.UpdateChecker.DownloadResult.Failed -> {
+                    isDownloadingUpdate = false
+                    updateError = result.message
+                }
+            }
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(SmartLedgerColors.bg)) {
         LazyColumn(
@@ -373,7 +417,7 @@ fun SettingsScreen(
 
     // ═══ 检查更新结果弹窗 ═══
     updateResult?.let { info ->
-        if (!isDownloadingUpdate) {
+        if (!isDownloadingUpdate && updateError == null) {
             com.smartledger.ui.components.SmartLedgerDialog(
                 onDismissRequest = { updateResult = null },
                 iconTint = SmartLedgerColors.accent,
@@ -388,46 +432,7 @@ fun SettingsScreen(
                         com.smartledger.util.UpdateChecker.openDownloadPage(context, info)
                         updateResult = null
                     } else {
-                        isDownloadingUpdate = true
-                        downloadProgress = 0
-                        coroutineScope.launch {
-                            when (val result =
-                                com.smartledger.util.UpdateChecker.downloadApk(context, info) { p ->
-                                    downloadProgress = p
-                                }
-                            ) {
-                                is com.smartledger.util.UpdateChecker.DownloadResult.Success -> {
-                                    isDownloadingUpdate = false
-                                    updateResult = null
-                                    val ok = com.smartledger.util.UpdateChecker.installApk(
-                                        context, result.apkFile
-                                    )
-                                    if (!ok) {
-                                        pendingInstallFile = result.apkFile
-                                        Toast.makeText(
-                                            context,
-                                            "请允许安装未知应用后点「继续安装」",
-                                            Toast.LENGTH_LONG
-                                        ).show()
-                                    } else {
-                                        Toast.makeText(
-                                            context,
-                                            "请按提示完成安装",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                }
-                                is com.smartledger.util.UpdateChecker.DownloadResult.NeedBrowser -> {
-                                    isDownloadingUpdate = false
-                                    com.smartledger.util.UpdateChecker.openDownloadPage(context, info)
-                                    updateResult = null
-                                }
-                                is com.smartledger.util.UpdateChecker.DownloadResult.Failed -> {
-                                    isDownloadingUpdate = false
-                                    updateError = result.message
-                                }
-                            }
-                        }
+                        startApkDownload(info)
                     }
                 },
                 dismissText = "稍后再说",
@@ -494,13 +499,29 @@ fun SettingsScreen(
     }
 
     updateError?.let { msg ->
+        val retryInfo = updateResult?.takeIf { !it.apkUrl.isNullOrBlank() }
+        val cachedPct = retryInfo?.let {
+            com.smartledger.util.UpdateChecker.partialDownloadPercent(context, it)
+        } ?: 0
         com.smartledger.ui.components.SmartLedgerDialog(
             onDismissRequest = { updateError = null },
             iconTint = SmartLedgerColors.expense,
-            title = "检查更新失败",
-            text = msg,
-            confirmText = "好的",
-            onConfirm = { updateError = null }
+            title = if (retryInfo != null) "下载失败" else "检查更新失败",
+            text = if (retryInfo != null && cachedPct > 0) {
+                "$msg\n\n已下载 ${cachedPct}%，重新下载将从断点继续。"
+            } else {
+                msg
+            },
+            confirmText = if (retryInfo != null) "重新下载" else "好的",
+            onConfirm = {
+                if (retryInfo != null) {
+                    startApkDownload(retryInfo)
+                } else {
+                    updateError = null
+                }
+            },
+            dismissText = if (retryInfo != null) "取消" else "",
+            onDismiss = { updateError = null }
         )
     }
 }

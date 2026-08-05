@@ -7,7 +7,6 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -25,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.smartledger.data.db.entity.Category
+import com.smartledger.ui.components.PaymentChannelPicker
 import com.smartledger.ui.theme.SmartLedgerColors
 
 @Composable
@@ -188,6 +188,19 @@ fun RecordScreen(
                 thickness = 0.5.dp
             )
 
+            // ═══ 支付渠道 ═══
+            PaymentChannelPicker(
+                selected = paymentMethod,
+                onSelected = { paymentMethod = it },
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+            )
+
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = 20.dp),
+                color = SmartLedgerColors.border,
+                thickness = 0.5.dp
+            )
+
             Spacer(modifier = Modifier.height(16.dp))
 
             // ═══ 分类选择网格 ═══
@@ -268,19 +281,21 @@ fun RecordScreen(
                 TextButton(
                     onClick = {
                         val amount = amountText.toDoubleOrNull()
+                        val channel = paymentMethod.trim().ifBlank { "其他" }
                         if (amount != null && amount > 0) {
                             viewModel.saveTransaction(
                                 amount = amount,
                                 type = transactionType,
                                 categoryId = selectedCategory?.id,
                                 merchant = merchant.ifBlank { null },
-                                paymentMethod = paymentMethod,
+                                paymentMethod = channel,
                                 note = note.ifBlank { null },
                                 onSuccess = {
                                     amountText = "0"
                                     selectedCategory = null
                                     merchant = ""
                                     note = ""
+                                    // 保留上次渠道，连续记账更省事
                                     onSaved()
                                 }
                             )
