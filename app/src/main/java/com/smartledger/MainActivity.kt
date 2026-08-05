@@ -275,50 +275,6 @@ fun MainApp() {
             }
         }
     }
-    fun startApkDownload(info: com.smartledger.util.UpdateChecker.UpdateInfo) {
-        updateDownloadError = null
-        isDownloadingUpdate = true
-        downloadProgress =
-            com.smartledger.util.UpdateChecker.partialDownloadPercent(context, info)
-        updateScope.launch {
-            when (val result =
-                com.smartledger.util.UpdateChecker.downloadApk(context, info) { p ->
-                    downloadProgress = p
-                }
-            ) {
-                is com.smartledger.util.UpdateChecker.DownloadResult.Success -> {
-                    isDownloadingUpdate = false
-                    updateInfo = null
-                    val ok = com.smartledger.util.UpdateChecker.installApk(
-                        context, result.apkFile
-                    )
-                    if (!ok) {
-                        pendingInstallFile = result.apkFile
-                        Toast.makeText(
-                            context,
-                            "请允许安装未知应用后点「继续安装」",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    } else {
-                        Toast.makeText(
-                            context,
-                            "请按提示完成安装",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                }
-                is com.smartledger.util.UpdateChecker.DownloadResult.NeedBrowser -> {
-                    isDownloadingUpdate = false
-                    com.smartledger.util.UpdateChecker.openDownloadPage(context, info)
-                    updateInfo = null
-                }
-                is com.smartledger.util.UpdateChecker.DownloadResult.Failed -> {
-                    isDownloadingUpdate = false
-                    updateDownloadError = result.message
-                }
-            }
-        }
-    }
     LaunchedEffect(Unit) {
         // 稍等首屏渲染，避免与权限引导抢弹窗
         delay(1200)
