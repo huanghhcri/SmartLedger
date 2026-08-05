@@ -58,7 +58,12 @@ object NotificationParser {
         Regex("已支付[￥¥]([\\d.]+)"),              // 已支付¥0.01 / [2条]微信支付：已支付¥648.00
         Regex("微信支付[：:]\\s*已支付[￥¥]([\\d.]+)"),
         Regex("支付[￥¥]([\\d.]+)"),                 // 支付¥0.01（须带￥/¥，避免「支付5元干饭」类）
-        Regex("微信支付.*?已支付[￥¥]([\\d.]+)")
+        Regex("微信支付.*?已支付[￥¥]([\\d.]+)"),
+        // 付款码：付款码付款成功 / 付款码已支付¥16.00
+        Regex("付款码.*?已支付[￥¥]([\\d.]+)"),
+        Regex("付款码.*?付款[￥¥]?([\\d.]+)"),
+        Regex("已付款[￥¥]([\\d.]+)"),
+        Regex("付款成功[￥¥]?([\\d.]+)")
         // 已移除：支付X元 / 支出X元 / 消费X元 —— 易被公众号营销命中
     )
 
@@ -314,6 +319,14 @@ object NotificationParser {
         if (Regex("一笔[\\d.]+元的支出").containsMatchIn(text)) return true
         if (Regex("一笔[\\d.]+元的收入").containsMatchIn(text)) return true
         if (Regex("收款[￥¥]").containsMatchIn(text)) return true
+        // 付款码：常与「已支付¥xx」或「付款成功」一起出现
+        if (text.contains("付款码") && (
+                text.contains("已支付") || text.contains("付款成功") ||
+                    text.contains("成功付款") || Regex("[￥¥]\\s*[\\d.]+").containsMatchIn(text)
+                )
+        ) {
+            return true
+        }
         // 微信支付：必须带确认动词，不能仅有「元」
         if (text.contains("微信支付") && (
                 text.contains("已支付") || text.contains("付款") ||
@@ -407,12 +420,64 @@ object NotificationParser {
             packageName.contains("cib")
     }
 
-    /** 去掉微信等聚合前缀：[2条]微信支付：已支付¥648.00 */
+    /** 是否像「[N条]」聚合摘要（金额可能在同组子通知里） */
+    fun looksLikeGroupedSummary(text: String): Boolean {
+        return Regex("[\\[［【(（]?\\d+条[\\]］】)）]?").containsMatchIn(text) ||
+            Regex("共\\d+条").containsMatchIn(text) ||
+            Regex("\\d+条新(消息|通知|提醒)").containsMatchIn(text)
+    }
+
+    /**
+     * 正文里是否已有可解析的明确支付/动账金额。
+     * 覆盖微信/支付宝/云闪付/抖音/电商收银台/银行卡动账等。
+     */
+    fun hasPayableAmountSignal(text: String): Boolean {
+        // 微信 / 支付宝 / 通用
+        if (Regex("已支付\\s*[￥¥]\\s*[\\d.]+").containsMatchIn(text)) return true
+        if (Regex("付款\\s*[￥¥]\\s*[\\d.]+").containsMatchIn(text)) return true
+        if (Regex("支付\\s*[￥¥]\\s*[\\d.]+").containsMatchIn(text)) return true
+        if (Regex("成功付款\\s*[\\d.]+").containsMatchIn(text)) return true
+        if (Regex("一笔[\\d.]+元的支出").containsMatchIn(text)) return true
+        if (Regex("一笔[\\d.]+元的收入").containsMatchIn(text)) return true
+        if (Regex("收款\\s*[￥¥]\\s*[\\d.]+").containsMatchIn(text)) return true
+        // 云闪付 / 电商收银台
+        if (Regex("使用【.+?】支付\\s*[\\d.]+").containsMatchIn(text)) return true
+        if (Regex("成功支付\\s*[\\d.]+").containsMatchIn(text)) return true
+        // 银行卡动账（含截断无「元」）
+        if (Regex("支出\\([^)]{0,120}\\)\\s*[\\d.]+").containsMatchIn(text)) return true
+        if (Regex("收入\\([^)]{0,120}\\)\\s*[\\d.]+").containsMatchIn(text)) return true
+        if (Regex("消费\\([^)]{0,120}\\)\\s*[\\d.]+").containsMatchIn(text)) return true
+        if (Regex("(?:支出|消费|收入|扣款|存入)人民币\\s*[\\d.]+").containsMatchIn(text)) return true
+        if (text.contains("动账") && Regex("[\\d]+(?:\\.[\\d]{1,2})?").containsMatchIn(text)) return true
+        if (Regex("交易金额\\s*[￥¥]?\\s*[\\d.]+").containsMatchIn(text)) return true
+        if (Regex("(?:转出|转入|到账|扣款)\\s*[￥¥]\\s*[\\d.]+").containsMatchIn(text)) return true
+        return false
+    }
+
+    /** 子通知是否像真实账务（用于从聚合组里挑选） */
+    fun looksLikeLedgerChild(text: String): Boolean {
+        return hasPayableAmountSignal(text) ||
+            hasStrongPaymentSignal(text) ||
+            hasBankLedgerSignal(text)
+    }
+
+    /** 去掉微信等聚合前缀：[2条] / ［10条］ / 【10条】 */
     fun normalizeNotificationText(text: String): String {
-        return text
-            .replace(Regex("\\[\\d+条\\]"), "")
-            .replace(Regex("\\(\\d+条\\)"), "")
-            .trim()
+        var s = text
+            .replace(Regex("[\\[［【]\\d+条[\\]］】]"), "")
+            .replace(Regex("[（(]\\d+条[）)]"), "")
+            .replace(Regex("(?<!\\d)\\d+条(?=微信支付|支付宝|已支付|付款)"), "")
+        // 全角数字 → 半角，避免「已支付¥１６.００」无法识别
+        val sb = StringBuilder(s.length)
+        for (ch in s) {
+            sb.append(
+                if (ch in '\uFF10'..'\uFF19') (ch - '\uFF10' + '0'.code).toChar() else ch
+            )
+        }
+        s = sb.toString()
+        // 统一常见货币符
+        s = s.replace('￥', '¥').replace('＄', '¥')
+        return s.trim().replace(Regex("\\s+"), " ")
     }
 
     /**

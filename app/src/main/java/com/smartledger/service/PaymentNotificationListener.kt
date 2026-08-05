@@ -129,24 +129,42 @@ class PaymentNotificationListener : NotificationListenerService() {
         val notification = sbn.notification ?: return
         val extras = notification.extras ?: return
 
-        // 兼容微信等把金额放在 BIG_TEXT 的通知
-        val (title, content) = extractNotificationText(extras)
-        val postTime = sbn.postTime  // 通知发布时间，比 currentTimeMillis 更准确
-        val text = NotificationParser.normalizeNotificationText("$title $content")
+        // 兼容各渠道把金额放在 BIG_TEXT / 同组子通知里
+        var (title, content) = extractNotificationText(extras)
+        var postTime = sbn.postTime  // 通知发布时间，比 currentTimeMillis 更准确
+        var text = NotificationParser.normalizeNotificationText("$title $content")
 
-        // 普通 App 的聚合摘要跳过；微信/支付宝摘要常带「[2条]已支付¥xx」，必须解析
         val isGroupSummary =
             notification.flags and Notification.FLAG_GROUP_SUMMARY != 0
+        val isMonitoredEarly = isMonitoredPackage(packageName)
+        val isBankPkgEarly = isBankPackage(packageName)
+
+        // 全渠道聚合补全：系统栏可能显示「[N条]…金额」，extras 却只有「[N条]」
+        // 微信/支付宝/云闪付/抖音/京东淘宝/各银行 App 均适用
+        val needGroupEnrich = isMonitoredEarly &&
+            (isGroupSummary || NotificationParser.looksLikeGroupedSummary(text)) &&
+            !NotificationParser.hasPayableAmountSignal(text) &&
+            !NotificationParser.hasBankLedgerSignal(text)
+        if (needGroupEnrich) {
+            val enriched = enrichPaymentTextFromGroup(sbn)
+            if (enriched != null) {
+                title = enriched.title
+                content = enriched.content
+                postTime = enriched.postTime
+                text = NotificationParser.normalizeNotificationText("$title $content")
+                Log.d(TAG, "Enriched grouped pay notice ($packageName): $text")
+            }
+        }
+
+        // 聚合摘要：仅监控渠道且补全/原文已像真实账务时才解析，其它 App 的摘要一律跳过
         if (isGroupSummary) {
-            val allowSummary = packageName == "com.tencent.mm" ||
-                packageName.contains("AlipayGphone")
-            val looksLikePay = NotificationParser.hasStrongPaymentSignal(text) ||
-                text.contains("已支付") || text.contains("付款")
-            if (!allowSummary || !looksLikePay) {
-                Log.d(TAG, "Skip group summary: pkg=$packageName")
+            val looksLikePay = NotificationParser.looksLikeLedgerChild(text) ||
+                text.contains("已支付") || text.contains("付款") || text.contains("动账")
+            if (!isMonitoredEarly || !looksLikePay) {
+                Log.d(TAG, "Skip group summary: pkg=$packageName text=$text")
                 return
             }
-            Log.d(TAG, "Parse payment group summary: pkg=$packageName text=$text")
+            Log.d(TAG, "Parse payment group summary: pkg=$packageName bank=$isBankPkgEarly text=$text")
         }
 
         Log.d(TAG, "=== New Notification ===")
@@ -428,16 +446,77 @@ class PaymentNotificationListener : NotificationListenerService() {
                 addIfNew(line)
             }
         }
-        // d) EXTRA_SUB_TEXT
+        // d) EXTRA_SUB_TEXT / SUMMARY
         addIfNew(extras.getCharSequence(Notification.EXTRA_SUB_TEXT))
+        addIfNew(extras.getCharSequence(Notification.EXTRA_SUMMARY_TEXT))
         // e) EXTRA_INFO_TEXT
         addIfNew(extras.getCharSequence(Notification.EXTRA_INFO_TEXT))
+        // f) MessagingStyle 消息列表（部分机型微信聚合走这里）
+        try {
+            @Suppress("DEPRECATION")
+            val messages = extras.getParcelableArray(Notification.EXTRA_MESSAGES)
+            if (messages != null) {
+                for (msg in messages) {
+                    if (msg is android.os.Bundle) {
+                        addIfNew(msg.getCharSequence("text"))
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
 
         val content = parts.joinToString(" ")
 
         Log.d(TAG, "extractNotificationText: title='$title', content='$content' (from ${parts.size} parts)")
 
         return title to content
+    }
+
+    private data class EnrichedPayText(
+        val title: String,
+        val content: String,
+        val postTime: Long
+    )
+
+    /**
+     * 从同组 / 同包最近活跃通知中找出带真实账务金额的子通知。
+     * 适用于微信/支付宝聚合、银行 App 折叠动账、云闪付/电商收银台等。
+     */
+    private fun enrichPaymentTextFromGroup(sbn: StatusBarNotification): EnrichedPayText? {
+        val active = try {
+            activeNotifications ?: return null
+        } catch (e: Exception) {
+            Log.w(TAG, "activeNotifications unavailable", e)
+            return null
+        }
+        val groupKey = sbn.groupKey
+        val notifGroup = sbn.notification.group
+        val candidates = active
+            .asSequence()
+            .filter { it.packageName == sbn.packageName }
+            .filter { it.key != sbn.key }
+            // 跳过其它摘要，避免套娃
+            .filter { (it.notification.flags and Notification.FLAG_GROUP_SUMMARY) == 0 }
+            .filter { child ->
+                val sameGroup = (!groupKey.isNullOrBlank() && child.groupKey == groupKey) ||
+                    (!notifGroup.isNullOrBlank() && child.notification.group == notifGroup)
+                val recentSamePkg = kotlin.math.abs(sbn.postTime - child.postTime) <= 180_000L
+                // 有 group：同组；无 group：同包近 3 分钟（银行/厂商常不带 group）
+                sameGroup || ((groupKey.isNullOrBlank() && notifGroup.isNullOrBlank()) && recentSamePkg)
+            }
+            .sortedByDescending { it.postTime }
+            .toList()
+
+        for (child in candidates) {
+            val extras = child.notification?.extras ?: continue
+            val (t, c) = extractNotificationText(extras)
+            val combined = NotificationParser.normalizeNotificationText("$t $c")
+            if (NotificationParser.looksLikeLedgerChild(combined)) {
+                Log.d(TAG, "Found ledger child: pkg=${child.packageName} key=${child.key} text=$combined")
+                return EnrichedPayText(t, c, child.postTime)
+            }
+        }
+        return null
     }
 
     private fun isMonitoredPackage(packageName: String): Boolean {
