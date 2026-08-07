@@ -106,8 +106,24 @@ object ListenerStatus {
         return isEnabledInSettings(context)
     }
 
+    /** 本进程内 binder 是否确认已连接（最可靠） */
+    fun isBinderConnected(): Boolean = binderConnected.get()
+
+    /**
+     * 是否视为「已连接」。
+     * 优先看本进程 binder；SharedPreferences 仅作辅助，避免冷启动误判。
+     *
+     * 注意：进程被杀后 prefs 可能仍为 true，但 binder 已断 ——
+     * 此时不能仅凭 prefs 显示「正在自动记录」，否则会出现假运行。
+     */
     fun isConnected(context: Context): Boolean {
         if (binderConnected.get()) return true
+        // 冷启动后 binder 尚未回调时：不信任旧 prefs，交给 KeepAlive 主动 rebind
+        return false
+    }
+
+    /** 曾成功连接过（prefs），用于判断是否值得继续自动重连 */
+    fun wasConnectedBefore(context: Context): Boolean {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getBoolean(KEY_CONNECTED, false)
     }
@@ -126,7 +142,8 @@ object ListenerStatus {
 
     fun displayState(context: Context): DisplayState {
         if (!isEnabledInSettings(context)) return DisplayState.NEED_PERMISSION
-        if (isConnected(context)) return DisplayState.CONNECTED
+        // 仅 binder 确认后才显示「正在自动记录」，避免假阳性
+        if (binderConnected.get()) return DisplayState.CONNECTED
         return DisplayState.RECOVERING
     }
 

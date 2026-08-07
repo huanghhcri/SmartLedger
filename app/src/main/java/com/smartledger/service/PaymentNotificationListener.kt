@@ -129,8 +129,14 @@ class PaymentNotificationListener : NotificationListenerService() {
         val notification = sbn.notification ?: return
         val extras = notification.extras ?: return
 
-        // 兼容各渠道把金额放在 BIG_TEXT / 同组子通知里
+        // 兼容各渠道把金额放在 BIG_TEXT / ticker / 同组子通知里
         var (title, content) = extractNotificationText(extras)
+        val ticker = notification.tickerText?.toString()?.trim().orEmpty()
+        if (ticker.isNotBlank() &&
+            !content.contains(ticker) && !title.contains(ticker)
+        ) {
+            content = if (content.isBlank()) ticker else "$content $ticker"
+        }
         var postTime = sbn.postTime  // 通知发布时间，比 currentTimeMillis 更准确
         var text = NotificationParser.normalizeNotificationText("$title $content")
 
@@ -141,8 +147,8 @@ class PaymentNotificationListener : NotificationListenerService() {
 
         // 全渠道聚合补全：系统栏可能显示「[N条]…金额」，extras 却只有「[N条]」
         // 微信/支付宝/云闪付/抖音/京东淘宝/各银行 App 均适用
-        val needGroupEnrich = isMonitoredEarly &&
-            (isGroupSummary || NotificationParser.looksLikeGroupedSummary(text)) &&
+        val looksGrouped = isGroupSummary || NotificationParser.looksLikeGroupedSummary(text)
+        val needGroupEnrich = isMonitoredEarly && looksGrouped &&
             !NotificationParser.hasPayableAmountSignal(text) &&
             !NotificationParser.hasBankLedgerSignal(text)
         if (needGroupEnrich) {
@@ -153,6 +159,8 @@ class PaymentNotificationListener : NotificationListenerService() {
                 postTime = enriched.postTime
                 text = NotificationParser.normalizeNotificationText("$title $content")
                 Log.d(TAG, "Enriched grouped pay notice ($packageName): $text")
+            } else {
+                Log.w(TAG, "Group enrich failed: pkg=$packageName text=$text")
             }
         }
 
@@ -481,6 +489,8 @@ class PaymentNotificationListener : NotificationListenerService() {
     /**
      * 从同组 / 同包最近活跃通知中找出带真实账务金额的子通知。
      * 适用于微信/支付宝聚合、银行 App 折叠动账、云闪付/电商收银台等。
+     *
+     * 注意：部分机型上摘要与子通知的 groupKey 不一致，不能仅依赖同组匹配。
      */
     private fun enrichPaymentTextFromGroup(sbn: StatusBarNotification): EnrichedPayText? {
         val active = try {
@@ -491,31 +501,50 @@ class PaymentNotificationListener : NotificationListenerService() {
         }
         val groupKey = sbn.groupKey
         val notifGroup = sbn.notification.group
-        val candidates = active
+        val children = active
             .asSequence()
             .filter { it.packageName == sbn.packageName }
             .filter { it.key != sbn.key }
-            // 跳过其它摘要，避免套娃
             .filter { (it.notification.flags and Notification.FLAG_GROUP_SUMMARY) == 0 }
-            .filter { child ->
-                val sameGroup = (!groupKey.isNullOrBlank() && child.groupKey == groupKey) ||
-                    (!notifGroup.isNullOrBlank() && child.notification.group == notifGroup)
-                val recentSamePkg = kotlin.math.abs(sbn.postTime - child.postTime) <= 180_000L
-                // 有 group：同组；无 group：同包近 3 分钟（银行/厂商常不带 group）
-                sameGroup || ((groupKey.isNullOrBlank() && notifGroup.isNullOrBlank()) && recentSamePkg)
-            }
             .sortedByDescending { it.postTime }
             .toList()
 
-        for (child in candidates) {
-            val extras = child.notification?.extras ?: continue
-            val (t, c) = extractNotificationText(extras)
-            val combined = NotificationParser.normalizeNotificationText("$t $c")
-            if (NotificationParser.looksLikeLedgerChild(combined)) {
-                Log.d(TAG, "Found ledger child: pkg=${child.packageName} key=${child.key} text=$combined")
-                return EnrichedPayText(t, c, child.postTime)
+        fun pickFrom(list: List<StatusBarNotification>, tag: String): EnrichedPayText? {
+            for (child in list) {
+                val extras = child.notification?.extras ?: continue
+                val (t, c) = extractNotificationText(extras)
+                // ticker 有时比 extras 更完整
+                val ticker = child.notification?.tickerText?.toString()?.trim().orEmpty()
+                val combined = NotificationParser.normalizeNotificationText(
+                    listOf(t, c, ticker).filter { it.isNotBlank() }.joinToString(" ")
+                )
+                if (NotificationParser.looksLikeLedgerChild(combined)) {
+                    Log.d(
+                        TAG,
+                        "Found ledger child ($tag): pkg=${child.packageName} key=${child.key} text=$combined"
+                    )
+                    return EnrichedPayText(
+                        t.ifBlank { ticker },
+                        c.ifBlank { ticker },
+                        child.postTime
+                    )
+                }
             }
+            return null
         }
+
+        val sameGroup = children.filter { child ->
+            (!groupKey.isNullOrBlank() && child.groupKey == groupKey) ||
+                (!notifGroup.isNullOrBlank() && child.notification.group == notifGroup)
+        }
+        pickFrom(sameGroup, "sameGroup")?.let { return it }
+
+        // 回退：同包近 5 分钟内任意带账务金额的子通知（覆盖 groupKey 不一致）
+        val recent = children.filter {
+            kotlin.math.abs(sbn.postTime - it.postTime) <= 300_000L
+        }
+        pickFrom(recent, "recentSamePkg")?.let { return it }
+
         return null
     }
 

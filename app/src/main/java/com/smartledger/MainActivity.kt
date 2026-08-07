@@ -194,14 +194,15 @@ fun MainApp() {
     // 静默重绑后复查：连上则不打扰；仍断则引导「关掉再开」通知使用权
     LaunchedEffect(pendingReconnectCheck) {
         if (!pendingReconnectCheck) return@LaunchedEffect
-        kotlinx.coroutines.delay(3000)
+        // OEM 重绑可能较慢，多等一会再判定失败
+        kotlinx.coroutines.delay(5000)
         pendingReconnectCheck = false
         if (!com.smartledger.service.ListenerStatus.isEnabledInSettings(context)) {
             showPermissionWarning = true
-        } else if (!com.smartledger.service.ListenerStatus.isConnected(context)) {
-            com.smartledger.service.ListenerStatus.requestRebindIfNeeded(context)
-            kotlinx.coroutines.delay(2000)
-            if (!com.smartledger.service.ListenerStatus.isConnected(context)) {
+        } else if (!com.smartledger.service.ListenerStatus.isBinderConnected()) {
+            com.smartledger.service.ListenerStatus.requestRebind(context, force = true)
+            kotlinx.coroutines.delay(4000)
+            if (!com.smartledger.service.ListenerStatus.isBinderConnected()) {
                 showReconnectFailed = true
             }
         }

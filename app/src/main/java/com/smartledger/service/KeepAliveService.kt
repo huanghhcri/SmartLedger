@@ -20,8 +20,10 @@ class KeepAliveService : Service() {
     companion object {
         private const val TAG = "KeepAlive"
         /** 未连上时更勤快；已连上则放慢 */
-        private const val RECOVER_FAST_MS = 20_000L
-        private const val RECOVER_SLOW_MS = 120_000L
+        private const val RECOVER_FAST_MS = 15_000L
+        private const val RECOVER_SLOW_MS = 90_000L
+        /** 已连接时仍周期性轻量 rebind，防止 OEM 假死却仍显示「正在记录」 */
+        private const val SOFT_REBIND_MS = 5 * 60_000L
 
         fun start(context: Context) {
             try {
@@ -59,6 +61,7 @@ class KeepAliveService : Service() {
 
     private val handler = Handler(Looper.getMainLooper())
     private var failStreak = 0
+    private var lastSoftRebindAt = 0L
 
     private val recoverRunnable = object : Runnable {
         override fun run() {
@@ -132,17 +135,29 @@ class KeepAliveService : Service() {
             return RECOVER_SLOW_MS
         }
 
-        if (ListenerStatus.isConnected(this)) {
+        // 本进程 binder 已确认连接：偶尔轻量 rebind 防假死
+        if (ListenerStatus.isBinderConnected()) {
             failStreak = 0
+            val now = System.currentTimeMillis()
+            if (now - lastSoftRebindAt >= SOFT_REBIND_MS) {
+                lastSoftRebindAt = now
+                ListenerStatus.requestRebind(this, force = true)
+                Log.d(TAG, "soft rebind while connected")
+            }
             return RECOVER_SLOW_MS
         }
 
+        // prefs 曾连接但本进程未收到 onListenerConnected → 显示「正在重新连接」并重绑
         failStreak++
-        Log.w(TAG, "NLS recovering, attempt #$failStreak")
+        Log.w(
+            TAG,
+            "NLS binder not ready (wasConnected=${ListenerStatus.wasConnectedBefore(this)}), " +
+                "attempt #$failStreak"
+        )
         ListenerStatus.requestRebind(this, force = true)
 
         // 仅在连续失败较久后，且受冷却限制下尝试一次强恢复
-        if (failStreak == 6) {
+        if (failStreak == 8) {
             ListenerStatus.forceReconnect(this, bypassCooldown = false)
         }
 
