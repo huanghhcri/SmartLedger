@@ -316,6 +316,7 @@ class ConfirmPaymentActivity : ComponentActivity() {
                         pending.transactionTime,
                         listOfNotNull(pending.notificationKey),
                         categories,
+                        pending.channelHint,
                     )
                     return@exclusive true
                 }
@@ -342,7 +343,10 @@ class ConfirmPaymentActivity : ComponentActivity() {
                         paymentMethod = pending.paymentMethod,
                         note = pending.reason?.let { "确认入账：$it" },
                         source = "auto",
-                        notificationKey = pending.notificationKey,
+                        notificationKey = DedupHelper.appendNoticeKeys(
+                            pending.notificationKey,
+                            listOfNotNull(DedupHelper.hintToken(pending.channelHint)),
+                        ),
                         transactionTime = pending.transactionTime
                     )
                 )

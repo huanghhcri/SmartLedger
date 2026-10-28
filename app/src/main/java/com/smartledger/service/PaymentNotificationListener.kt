@@ -349,6 +349,7 @@ class PaymentNotificationListener : NotificationListenerService() {
                             bookedAt,
                             noticeKeys,
                             categories,
+                            parsed.channelHint,
                         )
                         noticeKeys.forEach { ProcessedNoticeStore.mark(applicationContext, it) }
                         Log.d(
@@ -378,7 +379,10 @@ class PaymentNotificationListener : NotificationListenerService() {
                             type = parsed.type,
                             merchant = parsed.merchant,
                             paymentMethod = parsed.paymentMethod,
-                            notificationKey = DedupHelper.appendNoticeKeys(null, noticeKeys),
+                            notificationKey = DedupHelper.appendNoticeKeys(
+                                null,
+                                DedupHelper.withChannelHint(noticeKeys, parsed.channelHint),
+                            ),
                             transactionTime = bookedAt,
                             reason = parsed.uncertainReason ?: "识别结果不够确定",
                             rawSnippet = parsed.rawSnippet,
@@ -474,7 +478,10 @@ class PaymentNotificationListener : NotificationListenerService() {
             paymentMethod = parsed.paymentMethod,
             note = null,
             source = "auto",
-            notificationKey = DedupHelper.appendNoticeKeys(null, noticeKeys),
+            notificationKey = DedupHelper.appendNoticeKeys(
+                null,
+                DedupHelper.withChannelHint(noticeKeys, parsed.channelHint),
+            ),
             transactionTime = eventTime
         )
         val id = db.transactionDao().insert(transaction)

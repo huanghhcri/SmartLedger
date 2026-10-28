@@ -61,11 +61,37 @@ class DedupHelperTest {
     }
 
     @Test
-    fun unlabeledWechatAndBankBeyondNinetySecondsStaySeparate() {
+    fun wechatPaidByBankCardMatchesWithoutGatewayKeyword() {
         val cents = CurrencyUtil.toCents(8.50)
         val wechat = pay(cents, "微信", "便利店", base)
         val bank = pay(cents, "工商银行", "另一家店", base + 100_000)
-        assertFalse(DedupHelper.paymentsAreDuplicate(wechat, bank))
+        assertTrue(DedupHelper.paymentsAreDuplicate(wechat, bank))
+        assertTrue(DedupHelper.paymentsAreDuplicate(bank, wechat))
+    }
+
+    @Test
+    fun alipayPaidByBankCardMatchesWithinThreeMinutes() {
+        val cents = CurrencyUtil.toCents(26.0)
+        val alipay = pay(cents, "支付宝", "盒马", base)
+        val bank = pay(cents, "招商银行", "盒马", base + 150_000)
+        assertTrue(DedupHelper.paymentsAreDuplicate(alipay, bank))
+    }
+
+    @Test
+    fun wechatNoticeLabeledAsBankStillMatchesBankApp() {
+        val cents = CurrencyUtil.toCents(8.50)
+        // 微信正文写了储蓄卡名，支付方式被识别成工商银行，但渠道标记仍是微信
+        val wechat = pay(cents, "工商银行", "便利店", base, hint = "微信")
+        val bank = pay(cents, "工商银行", "便利店分店", base + 120_000)
+        assertTrue(DedupHelper.paymentsAreDuplicate(wechat, bank))
+    }
+
+    @Test
+    fun twoRealBankChargesWithoutWalletHintStaySeparate() {
+        val cents = CurrencyUtil.toCents(8.50)
+        val first = pay(cents, "工商银行", "便利店", base)
+        val second = pay(cents, "工商银行", "超市", base + 90_000)
+        assertFalse(DedupHelper.paymentsAreDuplicate(first, second))
     }
 
     @Test
@@ -182,10 +208,16 @@ class DedupHelperTest {
     }
 
     @Test
-    fun noticeKeysAppendWithoutDuplicating() {
+    fun noticeKeysKeepChannelHint() {
+        val stored = DedupHelper.appendNoticeKeys(
+            null,
+            DedupHelper.withChannelHint(listOf("aaa"), "微信")
+        )
+        assertEquals("aaa,ch:微信", stored)
+        assertEquals("微信", DedupHelper.channelHintFromStoredKey(stored))
         assertEquals(
-            "aaa,bbb",
-            DedupHelper.appendNoticeKeys("aaa", listOf("bbb", "aaa"))
+            "aaa,ch:微信,bbb",
+            DedupHelper.appendNoticeKeys(stored, listOf("bbb", "ch:支付宝"))
         )
     }
 }

@@ -835,7 +835,8 @@ object NotificationParser {
             confidence = confidence,
             uncertainReason = reason,
             rawSnippet = rawText.take(120),
-            channelHint = DedupHelper.inferChannelHint(rawText),
+            channelHint = DedupHelper.walletFromPackage(packageName)
+                ?: DedupHelper.inferChannelHint(rawText),
         )
     }
 

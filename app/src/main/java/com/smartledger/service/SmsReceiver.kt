@@ -167,6 +167,7 @@ class SmsReceiver : BroadcastReceiver() {
                         now,
                         listOf(smsKey),
                         categories,
+                        channelHint,
                     )
                     ProcessedNoticeStore.mark(context, smsKey)
                     return@exclusive
@@ -195,7 +196,10 @@ class SmsReceiver : BroadcastReceiver() {
                         paymentMethod = bankName,
                         note = null,
                         source = "sms",
-                        notificationKey = smsKey,
+                        notificationKey = DedupHelper.appendNoticeKeys(
+                            null,
+                            DedupHelper.withChannelHint(listOf(smsKey), channelHint),
+                        ),
                         transactionTime = now
                     )
                 )

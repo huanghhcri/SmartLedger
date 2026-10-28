@@ -84,7 +84,8 @@ object DedupHelper {
                     merchant = existing.merchant,
                     paymentMethod = existing.paymentMethod,
                     transactionTime = existing.transactionTime,
-                    channelHint = inferChannelHint(existing.merchant),
+                    channelHint = inferChannelHint(existing.merchant)
+                        ?: channelHintFromStoredKey(existing.notificationKey),
                 )
                 if (paymentsAreDuplicate(signature, incoming)) {
                     existing to abs(existing.transactionTime - now)
@@ -113,10 +114,20 @@ object DedupHelper {
 
         if (isCrossChannelCheckout(existing, incoming)) {
             if (hintsConflict(existing, incoming)) return CONFLICT_WINDOW_MS
-            // 京东/淘宝对银行卡，或银行正文写了财付通/网银在线：基本是同一笔
+            // 微信/支付宝/京东等收银台 + 银行卡：银行通知经常不写财付通/支付宝
             if (checkoutLinked(existing, incoming)) return CROSS_CHECKOUT_WINDOW_MS
-            // 没对上渠道时只留 90 秒，覆盖截图里同一分钟的双通知
             return CROSS_WALLET_WINDOW_MS
+        }
+        // 微信通知正文里写了银行卡名时，支付方式会被记成「工商银行」，和银行通知看起来同渠道
+        if (sameBankFamily(methodA, methodB)) {
+            val hintA = existing.channelHint ?: inferChannelHint(existing.merchant)
+            val hintB = incoming.channelHint ?: inferChannelHint(incoming.merchant)
+            if (isWalletHint(hintA) && isWalletHint(hintB) && hintA != hintB) {
+                return CONFLICT_WINDOW_MS
+            }
+            if (isWalletHint(hintA) || isWalletHint(hintB)) {
+                return CROSS_CHECKOUT_WINDOW_MS
+            }
         }
         if (sameMerchant && !bothGeneric) return SAME_MERCHANT_WINDOW_MS
         if (sameBankFamily(methodA, methodB) &&
@@ -180,6 +191,40 @@ object DedupHelper {
         return null
     }
 
+    /** 通知来自哪个收银台。银行 App 返回 null，渠道以正文为准。 */
+    fun walletFromPackage(packageName: String): String? {
+        return when {
+            packageName.contains("tencent.mm") -> "微信"
+            packageName.contains("AlipayGphone") -> "支付宝"
+            packageName.contains("unionpay") -> "云闪付"
+            packageName.contains("ugc.aweme") || packageName.contains("ugc.live") -> "抖音"
+            packageName.contains("jingdong") || packageName.contains("jd.jr") ||
+                packageName.contains("jdlite") -> "京东"
+            packageName.contains("taobao") -> "淘宝"
+            packageName.contains("tmall") -> "天猫"
+            else -> null
+        }
+    }
+
+    fun hintToken(hint: String?): String? {
+        if (hint.isNullOrBlank()) return null
+        return HINT_PREFIX + hint.trim()
+    }
+
+    fun channelHintFromStoredKey(notificationKey: String?): String? {
+        return notificationKey
+            ?.split(',')
+            ?.map { it.trim() }
+            ?.firstOrNull { it.startsWith(HINT_PREFIX) }
+            ?.removePrefix(HINT_PREFIX)
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    fun withChannelHint(keys: Collection<String>, hint: String?): List<String> {
+        val token = hintToken(hint) ?: return keys.toList()
+        return keys + token
+    }
+
     fun chooseMerchant(existing: String?, incoming: String?): String? {
         val oldReal = !isGenericMerchant(existing)
         val newReal = !isGenericMerchant(incoming)
@@ -213,6 +258,7 @@ object DedupHelper {
         incomingTime: Long,
         noticeKeys: Collection<String>,
         categories: List<Category>,
+        incomingChannelHint: String? = null,
     ) {
         val merchant = chooseMerchant(existing.merchant, incomingMerchant)
         val method = chooseMethod(existing.paymentMethod, incomingMethod)
@@ -224,7 +270,10 @@ object DedupHelper {
             type = existing.type,
         )
         val categoryId = upgradedCategoryId(existing.categoryId, suggested, categories)
-        val noticeKey = appendNoticeKeys(existing.notificationKey, noticeKeys)
+        val noticeKey = appendNoticeKeys(
+            existing.notificationKey,
+            withChannelHint(noticeKeys, incomingChannelHint),
+        )
         val transactionTime = earlierTime(existing.transactionTime, incomingTime)
         val changed = merchant != existing.merchant ||
             method != existing.paymentMethod ||
@@ -259,9 +308,16 @@ object DedupHelper {
             ?: mutableListOf()
         for (key in keys) {
             val trimmed = key.trim()
-            if (trimmed.isNotEmpty() && trimmed !in parts) parts.add(trimmed)
+            if (trimmed.isEmpty() || trimmed in parts) continue
+            // 已有渠道标记时保留先到的那一个，避免微信和支付宝标记叠在同一行
+            if (trimmed.startsWith(HINT_PREFIX) && parts.any { it.startsWith(HINT_PREFIX) }) continue
+            parts.add(trimmed)
         }
-        while (parts.size > 8) parts.removeAt(0)
+        while (parts.count { !it.startsWith(HINT_PREFIX) } > 8) {
+            val index = parts.indexOfFirst { !it.startsWith(HINT_PREFIX) }
+            if (index < 0) break
+            parts.removeAt(index)
+        }
         return parts.joinToString(",").ifBlank { null }
     }
 
@@ -293,18 +349,9 @@ object DedupHelper {
     }
 
     private fun checkoutLinked(a: PaymentSignature, b: PaymentSignature): Boolean {
-        val bank = if (isBankMethod(a.paymentMethod)) a else b
-        val wallet = if (bank === a) b else a
-        if (isShoppingPlatform(wallet.paymentMethod)) return true
-        val bankHint = bank.channelHint ?: inferChannelHint(bank.merchant)
-        val walletHint = wallet.channelHint ?: inferChannelHint(wallet.merchant)
-        if (bankHint != null && walletHint != null && bankHint == walletHint) return true
-        if (bankHint != null && hintCompatible(bankHint, wallet.paymentMethod.orEmpty())) return true
-        return false
-    }
-
-    private fun isShoppingPlatform(method: String?): Boolean {
-        return method == "京东" || method == "淘宝" || method == "天猫" || method == "抖音"
+        val wallet = if (isBankMethod(a.paymentMethod)) b else a
+        // 微信、支付宝用储蓄卡付款时，银行那条通知常常只有商户名，没有「财付通/支付宝」
+        return isWalletMethod(wallet.paymentMethod)
     }
 
     /**
@@ -346,6 +393,8 @@ object DedupHelper {
 
     private fun isWalletMethod(method: String?): Boolean = method != null && method in WALLET_METHODS
 
+    private fun isWalletHint(hint: String?): Boolean = hint != null && hint in WALLET_HINTS
+
     private fun isMoreSpecificMethod(new: String, existing: String): Boolean {
         return (METHOD_PRIORITY[new] ?: 0) > (METHOD_PRIORITY[existing] ?: 0)
     }
@@ -364,6 +413,10 @@ object DedupHelper {
     private val WALLET_METHODS = setOf(
         "微信", "支付宝", "云闪付", "抖音", "京东", "淘宝", "天猫",
     )
+
+    private val WALLET_HINTS = WALLET_METHODS
+
+    private const val HINT_PREFIX = "ch:"
 
     private val METHOD_PRIORITY = mapOf(
         "工商银行" to 10, "邮政储蓄" to 10, "建设银行" to 10,
