@@ -155,6 +155,7 @@ class SmsReceiver : BroadcastReceiver() {
                     bankName,
                     now,
                     channelHint,
+                    DedupHelper.ORIGIN_BANK,
                 )
                 if (duplicate != null) {
                     Log.d(TAG, "SMS duplicate detected, merging")
@@ -168,6 +169,7 @@ class SmsReceiver : BroadcastReceiver() {
                         listOf(smsKey),
                         categories,
                         channelHint,
+                        DedupHelper.ORIGIN_BANK,
                     )
                     ProcessedNoticeStore.mark(context, smsKey)
                     return@exclusive
@@ -198,7 +200,7 @@ class SmsReceiver : BroadcastReceiver() {
                         source = "sms",
                         notificationKey = DedupHelper.appendNoticeKeys(
                             null,
-                            DedupHelper.withChannelHint(listOf(smsKey), channelHint),
+                            DedupHelper.withChannelHint(listOf(smsKey), channelHint, DedupHelper.ORIGIN_BANK),
                         ),
                         transactionTime = now
                     )

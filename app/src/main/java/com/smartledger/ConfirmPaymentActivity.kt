@@ -305,6 +305,7 @@ class ConfirmPaymentActivity : ComponentActivity() {
                     pending.paymentMethod,
                     pending.transactionTime,
                     pending.channelHint,
+                    pending.notifyOrigin,
                 )
                 if (duplicate != null) {
                     val categories = db.categoryDao().getAllOnce()
@@ -317,6 +318,7 @@ class ConfirmPaymentActivity : ComponentActivity() {
                         listOfNotNull(pending.notificationKey),
                         categories,
                         pending.channelHint,
+                        pending.notifyOrigin,
                     )
                     return@exclusive true
                 }
@@ -345,7 +347,10 @@ class ConfirmPaymentActivity : ComponentActivity() {
                         source = "auto",
                         notificationKey = DedupHelper.appendNoticeKeys(
                             pending.notificationKey,
-                            listOfNotNull(DedupHelper.hintToken(pending.channelHint)),
+                            listOfNotNull(
+                                DedupHelper.hintToken(pending.channelHint),
+                                DedupHelper.originToken(pending.notifyOrigin),
+                            ),
                         ),
                         transactionTime = pending.transactionTime
                     )

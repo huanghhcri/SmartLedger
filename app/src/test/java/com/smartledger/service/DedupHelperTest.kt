@@ -19,7 +19,11 @@ class DedupHelperTest {
         time: Long = base,
         type: String = "expense",
         hint: String? = null,
-    ) = DedupHelper.PaymentSignature(cents, type, merchant, method, time, hint)
+        origin: String? = null,
+        paired: Boolean = false,
+    ) = DedupHelper.PaymentSignature(
+        cents, type, merchant, method, time, hint, origin, paired
+    )
 
     @Test
     fun jdAndIcbcSameMinuteAreOnePayment() {
@@ -80,10 +84,63 @@ class DedupHelperTest {
     @Test
     fun wechatNoticeLabeledAsBankStillMatchesBankApp() {
         val cents = CurrencyUtil.toCents(8.50)
-        // 微信正文写了储蓄卡名，支付方式被识别成工商银行，但渠道标记仍是微信
-        val wechat = pay(cents, "工商银行", "便利店", base, hint = "微信")
-        val bank = pay(cents, "工商银行", "便利店分店", base + 120_000)
+        // 微信正文写了储蓄卡名，支付方式被识别成工商银行，但通知来自微信 App
+        val wechat = pay(
+            cents, "工商银行", "便利店", base,
+            hint = "微信", origin = DedupHelper.ORIGIN_WALLET
+        )
+        val bank = pay(
+            cents, "工商银行", "便利店分店", base + 120_000,
+            origin = DedupHelper.ORIGIN_BANK
+        )
         assertTrue(DedupHelper.paymentsAreDuplicate(wechat, bank))
+    }
+
+    @Test
+    fun secondPurchaseTwoMinutesLaterIsKept() {
+        val cents = CurrencyUtil.toCents(55.0)
+        val first = pay(
+            cents, "工商银行", "商品", base,
+            hint = "微信", origin = DedupHelper.ORIGIN_WALLET, paired = true
+        )
+        val secondWechat = pay(
+            cents, "微信", "商品", base + 120_000,
+            hint = "微信", origin = DedupHelper.ORIGIN_WALLET
+        )
+        val secondBank = pay(
+            cents, "工商银行", "商品", base + 130_000,
+            hint = "微信", origin = DedupHelper.ORIGIN_BANK
+        )
+        assertFalse(DedupHelper.paymentsAreDuplicate(first, secondWechat))
+        assertFalse(DedupHelper.paymentsAreDuplicate(first, secondBank))
+    }
+
+    @Test
+    fun firstPurchaseBankNoticeStillJoinsWithinTwoMinutes() {
+        val cents = CurrencyUtil.toCents(55.0)
+        val wechat = pay(
+            cents, "微信", "商品", base,
+            hint = "微信", origin = DedupHelper.ORIGIN_WALLET
+        )
+        val bank = pay(
+            cents, "工商银行", "商品", base + 120_000,
+            hint = "微信", origin = DedupHelper.ORIGIN_BANK
+        )
+        assertTrue(DedupHelper.paymentsAreDuplicate(wechat, bank))
+    }
+
+    @Test
+    fun twoWechatPurchasesOfSameShopStaySeparate() {
+        val cents = CurrencyUtil.toCents(55.0)
+        val first = pay(
+            cents, "微信", "商品", base,
+            hint = "微信", origin = DedupHelper.ORIGIN_WALLET
+        )
+        val second = pay(
+            cents, "微信", "商品", base + 120_000,
+            hint = "微信", origin = DedupHelper.ORIGIN_WALLET
+        )
+        assertFalse(DedupHelper.paymentsAreDuplicate(first, second))
     }
 
     @Test

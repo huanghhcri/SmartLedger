@@ -19,6 +19,7 @@ object PendingConfirmStore {
         val reason: String?,
         val rawSnippet: String?,
         val channelHint: String? = null,
+        val notifyOrigin: String? = null,
     )
 
     private val seq = AtomicLong(1)
@@ -34,6 +35,7 @@ object PendingConfirmStore {
         reason: String?,
         rawSnippet: String?,
         channelHint: String? = null,
+        notifyOrigin: String? = null,
     ): Long {
         val id = seq.getAndIncrement()
         map[id] = Pending(
@@ -47,6 +49,7 @@ object PendingConfirmStore {
             reason = reason,
             rawSnippet = rawSnippet,
             channelHint = channelHint,
+            notifyOrigin = notifyOrigin,
         )
         // 防止堆积：最多保留 20 条
         if (map.size > 20) {

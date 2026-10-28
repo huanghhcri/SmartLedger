@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-Android%208.0%2B-green.svg)](https://github.com/huanghhcri/SmartLedger)
 
 一款 Android 本地智能记账应用：监听支付类通知自动入账，也支持手动记账、预算、统计与数据备份。  
-当前版本：**v1.0.30**
+当前版本：**v1.0.31**
 
 ## ✨ 功能特点
 
@@ -157,6 +157,7 @@ Release 签名从 `local.properties` 读取（勿提交密钥到仓库）。
 
 详见 [Releases](https://github.com/huanghhcri/SmartLedger/releases)。
 
+- **v1.0.31**：隔约两分钟再买一笔相同金额，两笔都会入账，不会并成一笔  
 - **v1.0.30**：微信、支付宝用银行卡付款时，不再和银行通知各记一笔  
 - **v1.0.29**：同一笔付款不再因收银台和银行卡双通知、或未清除的旧通知被再次推送而记两笔  
 - **v1.0.24**：启动自动检查更新；下载断点续传；手动记账 / 编辑可选渠道  

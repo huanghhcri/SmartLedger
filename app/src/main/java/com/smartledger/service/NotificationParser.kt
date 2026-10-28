@@ -23,6 +23,8 @@ data class ParsedPayment(
      * 收银台通知自身通常为 null，或与 [paymentMethod] 相同。
      */
     val channelHint: String? = null,
+    /** wallet：这条通知来自微信/支付宝等；bank：来自银行 App。 */
+    val notifyOrigin: String? = null,
 )
 
 private data class AmountHit(
@@ -837,6 +839,11 @@ object NotificationParser {
             rawSnippet = rawText.take(120),
             channelHint = DedupHelper.walletFromPackage(packageName)
                 ?: DedupHelper.inferChannelHint(rawText),
+            notifyOrigin = when {
+                DedupHelper.walletFromPackage(packageName) != null -> DedupHelper.ORIGIN_WALLET
+                isBankApp(packageName) -> DedupHelper.ORIGIN_BANK
+                else -> null
+            },
         )
     }
 

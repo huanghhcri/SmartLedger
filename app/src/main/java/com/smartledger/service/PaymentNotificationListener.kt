@@ -338,6 +338,7 @@ class PaymentNotificationListener : NotificationListenerService() {
                         parsed.paymentMethod,
                         bookedAt,
                         parsed.channelHint,
+                        parsed.notifyOrigin,
                     )
                     if (duplicate != null) {
                         val categories = db.categoryDao().getAllOnce()
@@ -350,6 +351,7 @@ class PaymentNotificationListener : NotificationListenerService() {
                             noticeKeys,
                             categories,
                             parsed.channelHint,
+                            parsed.notifyOrigin,
                         )
                         noticeKeys.forEach { ProcessedNoticeStore.mark(applicationContext, it) }
                         Log.d(
@@ -381,12 +383,13 @@ class PaymentNotificationListener : NotificationListenerService() {
                             paymentMethod = parsed.paymentMethod,
                             notificationKey = DedupHelper.appendNoticeKeys(
                                 null,
-                                DedupHelper.withChannelHint(noticeKeys, parsed.channelHint),
+                                DedupHelper.withChannelHint(noticeKeys, parsed.channelHint, parsed.notifyOrigin),
                             ),
                             transactionTime = bookedAt,
                             reason = parsed.uncertainReason ?: "识别结果不够确定",
                             rawSnippet = parsed.rawSnippet,
                             channelHint = parsed.channelHint,
+                            notifyOrigin = parsed.notifyOrigin,
                         )
                         noticeKeys.forEach { ProcessedNoticeStore.mark(applicationContext, it) }
                         return@exclusive
@@ -480,7 +483,7 @@ class PaymentNotificationListener : NotificationListenerService() {
             source = "auto",
             notificationKey = DedupHelper.appendNoticeKeys(
                 null,
-                DedupHelper.withChannelHint(noticeKeys, parsed.channelHint),
+                DedupHelper.withChannelHint(noticeKeys, parsed.channelHint, parsed.notifyOrigin),
             ),
             transactionTime = eventTime
         )
