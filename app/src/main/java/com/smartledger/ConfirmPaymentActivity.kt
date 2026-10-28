@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.smartledger.data.db.AppDatabase
 import com.smartledger.data.db.entity.Transaction
+import com.smartledger.service.DedupHelper
 import com.smartledger.service.PendingConfirmStore
 import com.smartledger.service.SmartCategorizer
 import com.smartledger.ui.theme.SmartLedgerColors
@@ -100,6 +101,12 @@ class ConfirmPaymentActivity : ComponentActivity() {
                 var saving by remember { mutableStateOf(false) }
 
                 fun dismissIgnore() {
+                    pending.notificationKey?.split(',')?.forEach { key ->
+                        com.smartledger.service.ProcessedNoticeStore.mark(
+                            this@ConfirmPaymentActivity,
+                            key.trim()
+                        )
+                    }
                     PendingConfirmStore.remove(pendingId)
                     NotificationStyle.cancelConfirm(this@ConfirmPaymentActivity, pendingId)
                     finish()
@@ -289,59 +296,66 @@ class ConfirmPaymentActivity : ComponentActivity() {
         try {
             val db = AppDatabase.getInstance(applicationContext)
             val amountCents = CurrencyUtil.toCents(amount)
-            val duplicate = com.smartledger.service.DedupHelper.findDuplicate(
-                db.transactionDao(),
-                amountCents,
-                type,
-                merchant,
-                pending.paymentMethod,
-                pending.transactionTime
-            )
-            if (duplicate != null) {
-                com.smartledger.service.DedupHelper.mergeIfDuplicate(
+            DedupHelper.exclusive {
+                val duplicate = DedupHelper.findDuplicate(
                     db.transactionDao(),
-                    duplicate,
+                    amountCents,
+                    type,
+                    merchant,
                     pending.paymentMethod,
-                    merchant
+                    pending.transactionTime,
+                    pending.channelHint,
                 )
-                return@withContext true
-            }
+                if (duplicate != null) {
+                    val categories = db.categoryDao().getAllOnce()
+                    DedupHelper.absorbDuplicate(
+                        db.transactionDao(),
+                        duplicate,
+                        pending.paymentMethod,
+                        merchant,
+                        pending.transactionTime,
+                        listOfNotNull(pending.notificationKey),
+                        categories,
+                    )
+                    return@exclusive true
+                }
 
-            var categoryId: Long? = null
-            try {
-                val categories = db.categoryDao().getAllOnce()
-                categoryId = SmartCategorizer.categorize(
-                    merchant = merchant,
-                    paymentMethod = pending.paymentMethod,
-                    note = null,
-                    categories = categories,
-                    type = type
-                )
-            } catch (_: Exception) {
-            }
+                var categoryId: Long? = null
+                try {
+                    val categories = db.categoryDao().getAllOnce()
+                    categoryId = SmartCategorizer.categorize(
+                        merchant = merchant,
+                        paymentMethod = pending.paymentMethod,
+                        note = null,
+                        categories = categories,
+                        type = type
+                    )
+                } catch (_: Exception) {
+                }
 
-            val id = db.transactionDao().insert(
-                Transaction(
-                    amount = amount,
-                    type = type,
-                    categoryId = categoryId,
-                    merchant = merchant,
-                    paymentMethod = pending.paymentMethod,
-                    note = pending.reason?.let { "确认入账：$it" },
-                    source = "auto",
-                    notificationKey = pending.notificationKey,
-                    transactionTime = pending.transactionTime
+                val id = db.transactionDao().insert(
+                    Transaction(
+                        amount = amount,
+                        type = type,
+                        categoryId = categoryId,
+                        merchant = merchant,
+                        paymentMethod = pending.paymentMethod,
+                        note = pending.reason?.let { "确认入账：$it" },
+                        source = "auto",
+                        notificationKey = pending.notificationKey,
+                        transactionTime = pending.transactionTime
+                    )
                 )
-            )
-            NotificationStyle.notifyPaymentDetected(
-                applicationContext,
-                amount,
-                merchant,
-                pending.paymentMethod,
-                type,
-                id
-            )
-            true
+                NotificationStyle.notifyPaymentDetected(
+                    applicationContext,
+                    amount,
+                    merchant,
+                    pending.paymentMethod,
+                    type,
+                    id
+                )
+                true
+            }
         } catch (e: Exception) {
             e.printStackTrace()
             false

@@ -15,8 +15,8 @@ android {
         applicationId = "com.smartledger"
         minSdk = 26
         targetSdk = 35
-        versionCode = 29
-        versionName = "1.0.28"
+        versionCode = 30
+        versionName = "1.0.29"
     }
 
     // ═══ 签名配置（从 local.properties 安全读取）═══
@@ -44,6 +44,10 @@ android {
             )
             signingConfig = signingConfigs.getByName("release")
         }
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 
     compileOptions {
@@ -91,6 +95,8 @@ dependencies {
 
     // WorkManager
     implementation("androidx.work:work-runtime-ktx:2.10.0")
+
+    testImplementation("junit:junit:4.13.2")
 
     // Debug
     debugImplementation(libs.androidx.compose.ui.tooling)

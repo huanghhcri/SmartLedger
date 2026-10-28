@@ -130,15 +130,15 @@ class PaymentNotificationListener : NotificationListenerService() {
         val extras = notification.extras ?: return
 
         // 兼容各渠道把金额放在 BIG_TEXT / ticker / 同组子通知里
-        var (title, content) = extractNotificationText(extras)
-        val ticker = notification.tickerText?.toString()?.trim().orEmpty()
-        if (ticker.isNotBlank() &&
-            !content.contains(ticker) && !title.contains(ticker)
-        ) {
-            content = if (content.isBlank()) ticker else "$content $ticker"
-        }
-        var postTime = sbn.postTime  // 通知发布时间，比 currentTimeMillis 更准确
-        var text = NotificationParser.normalizeNotificationText("$title $content")
+        val extracted = normalizedTextOf(sbn) ?: return
+        var title = extracted.title
+        var content = extracted.content
+        val rawText = extracted.text
+        var text = rawText
+        val arrivedAt = System.currentTimeMillis()
+        // postTime 在通知被刷新时会跳成“现在”；when 通常仍是原交易时间
+        var eventTime = DedupHelper.stableEventTime(sbn.postTime, notification.`when`, arrivedAt)
+        var adoptedChildKey: String? = null
 
         val isGroupSummary =
             notification.flags and Notification.FLAG_GROUP_SUMMARY != 0
@@ -156,12 +156,34 @@ class PaymentNotificationListener : NotificationListenerService() {
             if (enriched != null) {
                 title = enriched.title
                 content = enriched.content
-                postTime = enriched.postTime
+                eventTime = enriched.eventTime
+                adoptedChildKey = enriched.childKey
                 text = NotificationParser.normalizeNotificationText("$title $content")
                 Log.d(TAG, "Enriched grouped pay notice ($packageName): $text")
             } else {
                 Log.w(TAG, "Group enrich failed: pkg=$packageName text=$text")
             }
+        }
+
+        // 指纹用「真正入账的正文」。不能把「[N条]微信支付」这种没金额的摘要前缀记进去，
+        // 否则下一次聚合刷新会把新的一笔也跳过。
+        val noticeKeys = buildList {
+            add(ProcessedNoticeStore.fingerprint(sbn.key, text))
+            if (rawText != text && NotificationParser.looksLikeLedgerChild(rawText)) {
+                add(ProcessedNoticeStore.fingerprint(sbn.key, rawText))
+            }
+            adoptedChildKey?.let { childKey ->
+                add(ProcessedNoticeStore.fingerprint(childKey, text))
+            }
+        }.distinct()
+        if (noticeKeys.any { ProcessedNoticeStore.isProcessed(applicationContext, it) }) {
+            Log.d(TAG, "Skip replayed notice: pkg=$packageName text=$text")
+            return
+        }
+        if (isStaleGroupedReplay(sbn, text)) {
+            noticeKeys.forEach { ProcessedNoticeStore.mark(applicationContext, it) }
+            Log.d(TAG, "Skip stale grouped notice: pkg=$packageName text=$text")
+            return
         }
 
         // 聚合摘要：仅监控渠道且补全/原文已像真实账务时才解析，其它 App 的摘要一律跳过
@@ -291,15 +313,100 @@ class PaymentNotificationListener : NotificationListenerService() {
             }
         }
 
-        // 模糊 / 全部需确认：先弹确认，确认前不落库
-        if (shouldAskConfirm(parsed)) {
-            askUserConfirm(parsed, postTime)
-            return
-        }
-
+        val bookedAt = eventTime
         scope.launch {
             try {
-                saveAutoTransaction(parsed, postTime)
+                var confirmId: Long? = null
+                DedupHelper.exclusive {
+                    if (noticeKeys.any { ProcessedNoticeStore.isProcessed(applicationContext, it) }) {
+                        return@exclusive
+                    }
+                    val db = AppDatabase.getInstance(applicationContext)
+                    val dao = db.transactionDao()
+                    if (noticeKeys.any { key -> dao.findByNoticeKey(key) != null }) {
+                        noticeKeys.forEach { ProcessedNoticeStore.mark(applicationContext, it) }
+                        Log.d(TAG, "Skip notice already stored: $text")
+                        return@exclusive
+                    }
+
+                    val amountCents = com.smartledger.util.CurrencyUtil.toCents(parsed.amount)
+                    val duplicate = DedupHelper.findDuplicate(
+                        dao,
+                        amountCents,
+                        parsed.type,
+                        parsed.merchant,
+                        parsed.paymentMethod,
+                        bookedAt,
+                        parsed.channelHint,
+                    )
+                    if (duplicate != null) {
+                        val categories = db.categoryDao().getAllOnce()
+                        DedupHelper.absorbDuplicate(
+                            dao,
+                            duplicate,
+                            parsed.paymentMethod,
+                            parsed.merchant,
+                            bookedAt,
+                            noticeKeys,
+                            categories,
+                        )
+                        noticeKeys.forEach { ProcessedNoticeStore.mark(applicationContext, it) }
+                        Log.d(
+                            TAG,
+                            "Duplicate absorbed: existing=${duplicate.paymentMethod}, " +
+                                "new=${parsed.paymentMethod}, amount=${parsed.amount}"
+                        )
+                        return@exclusive
+                    }
+
+                    val similarPending = PendingConfirmStore.findSimilar(
+                        amountCents,
+                        parsed.type,
+                        parsed.merchant,
+                        parsed.paymentMethod,
+                        bookedAt,
+                        parsed.channelHint,
+                    )
+                    if (shouldAskConfirm(parsed)) {
+                        if (similarPending != null) {
+                            noticeKeys.forEach { ProcessedNoticeStore.mark(applicationContext, it) }
+                            Log.d(TAG, "Similar confirm already pending, skip")
+                            return@exclusive
+                        }
+                        confirmId = PendingConfirmStore.put(
+                            amount = parsed.amount,
+                            type = parsed.type,
+                            merchant = parsed.merchant,
+                            paymentMethod = parsed.paymentMethod,
+                            notificationKey = DedupHelper.appendNoticeKeys(null, noticeKeys),
+                            transactionTime = bookedAt,
+                            reason = parsed.uncertainReason ?: "识别结果不够确定",
+                            rawSnippet = parsed.rawSnippet,
+                            channelHint = parsed.channelHint,
+                        )
+                        noticeKeys.forEach { ProcessedNoticeStore.mark(applicationContext, it) }
+                        return@exclusive
+                    }
+
+                    // 银行通知已经能确定入账时，撤掉收银台那条还没确认的重复弹窗
+                    if (similarPending != null) {
+                        PendingConfirmStore.remove(similarPending.id)
+                        val pendingId = similarPending.id
+                        mainHandler.post {
+                            com.smartledger.util.NotificationStyle.cancelConfirm(
+                                applicationContext,
+                                pendingId
+                            )
+                        }
+                    }
+
+                    insertAutoTransaction(db, parsed, bookedAt, noticeKeys)
+                    noticeKeys.forEach { ProcessedNoticeStore.mark(applicationContext, it) }
+                }
+                val pendingId = confirmId
+                if (pendingId != null) {
+                    mainHandler.post { showConfirmUi(pendingId, parsed) }
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to save transaction", e)
             }
@@ -314,17 +421,7 @@ class PaymentNotificationListener : NotificationListenerService() {
         return parsed.confidence == ParseConfidence.UNCERTAIN
     }
 
-    private fun askUserConfirm(parsed: ParsedPayment, postTime: Long) {
-        val pendingId = PendingConfirmStore.put(
-            amount = parsed.amount,
-            type = parsed.type,
-            merchant = parsed.merchant,
-            paymentMethod = parsed.paymentMethod,
-            notificationKey = parsed.notificationKey,
-            transactionTime = postTime,
-            reason = parsed.uncertainReason ?: "识别结果不够确定",
-            rawSnippet = parsed.rawSnippet
-        )
+    private fun showConfirmUi(pendingId: Long, parsed: ParsedPayment) {
         Log.d(TAG, "Ask confirm pendingId=$pendingId reason=${parsed.uncertainReason}")
         com.smartledger.util.NotificationStyle.notifyNeedsConfirm(
             applicationContext,
@@ -348,26 +445,13 @@ class PaymentNotificationListener : NotificationListenerService() {
         }
     }
 
-    private suspend fun saveAutoTransaction(parsed: ParsedPayment, postTime: Long) {
-        val db = AppDatabase.getInstance(applicationContext)
-
-        val amountCents = com.smartledger.util.CurrencyUtil.toCents(parsed.amount)
-        val duplicate = DedupHelper.findDuplicate(
-            db.transactionDao(),
-            amountCents,
-            parsed.type,
-            parsed.merchant,
-            parsed.paymentMethod,
-            postTime
-        )
-
-        if (duplicate != null) {
-            Log.d(TAG, "Duplicate: existing=${duplicate.paymentMethod}, new=${parsed.paymentMethod}, amount=${parsed.amount}")
-            DedupHelper.mergeIfDuplicate(db.transactionDao(), duplicate, parsed.paymentMethod, parsed.merchant)
-            return
-        }
-
-        // 分类先算好再一次性 insert，避免 insert+update 触发首页两次全量刷新卡顿
+    /** 调用方必须已持有 [DedupHelper.exclusive]。 */
+    private suspend fun insertAutoTransaction(
+        db: AppDatabase,
+        parsed: ParsedPayment,
+        eventTime: Long,
+        noticeKeys: List<String>,
+    ) {
         var categoryId: Long? = null
         try {
             val categories = db.categoryDao().getAllOnce()
@@ -390,11 +474,11 @@ class PaymentNotificationListener : NotificationListenerService() {
             paymentMethod = parsed.paymentMethod,
             note = null,
             source = "auto",
-            notificationKey = parsed.notificationKey,
-            transactionTime = postTime
+            notificationKey = DedupHelper.appendNoticeKeys(null, noticeKeys),
+            transactionTime = eventTime
         )
         val id = db.transactionDao().insert(transaction)
-        Log.d(TAG, "Transaction saved: id=$id, type=${parsed.type}")
+        Log.d(TAG, "Transaction saved: id=$id, type=${parsed.type}, time=$eventTime")
 
         com.smartledger.util.NotificationStyle.notifyPaymentDetected(
             applicationContext,
@@ -476,17 +560,123 @@ class PaymentNotificationListener : NotificationListenerService() {
         return title to content
     }
 
+    private data class NoticeText(
+        val title: String,
+        val content: String,
+        val text: String,
+    )
+
     private data class EnrichedPayText(
         val title: String,
         val content: String,
-        val postTime: Long
+        val eventTime: Long,
+        val childKey: String,
     )
+
+    /**
+     * 与 [onNotificationPosted] 使用同一套标题/正文/ticker 拼接，
+     * 这样子通知的指纹和摘要补全时算出的指纹一致。
+     */
+    private fun normalizedTextOf(sbn: StatusBarNotification): NoticeText? {
+        val notification = sbn.notification ?: return null
+        val extras = notification.extras ?: return null
+        var (title, content) = extractNotificationText(extras)
+        val ticker = notification.tickerText?.toString()?.trim().orEmpty()
+        if (ticker.isNotBlank() && !content.contains(ticker) && !title.contains(ticker)) {
+            content = if (content.isBlank()) ticker else "$content $ticker"
+        }
+        val text = NotificationParser.normalizeNotificationText("$title $content")
+        return NoticeText(title, content, text)
+    }
+
+    /**
+     * 分组摘要在下午被刷新时，不能把早上还留在通知栏里的那笔金额再抄进来。
+     * 只有「还没记过、且和这条摘要几乎同时」的子通知才能用来补全。
+     */
+    private fun acceptLedgerChild(
+        child: StatusBarNotification,
+        summary: StatusBarNotification,
+    ): EnrichedPayText? {
+        val extracted = normalizedTextOf(child) ?: return null
+        if (!NotificationParser.looksLikeLedgerChild(extracted.text)) return null
+        val fp = ProcessedNoticeStore.fingerprint(child.key, extracted.text)
+        if (ProcessedNoticeStore.isProcessed(applicationContext, fp)) {
+            Log.d(TAG, "Skip booked child: ${child.key}")
+            return null
+        }
+        val now = System.currentTimeMillis()
+        val childEvent = DedupHelper.stableEventTime(child.postTime, child.notification.`when`, now)
+        val summaryEvent = DedupHelper.stableEventTime(summary.postTime, summary.notification.`when`, now)
+        val close = kotlin.math.abs(childEvent - summaryEvent) <= DedupHelper.CROSS_CHECKOUT_WINDOW_MS ||
+            kotlin.math.abs(child.postTime - summary.postTime) <= DedupHelper.CROSS_CHECKOUT_WINDOW_MS
+        if (!close) {
+            Log.d(TAG, "Skip old child: ${child.key}")
+            return null
+        }
+        return EnrichedPayText(
+            title = extracted.title,
+            content = extracted.content,
+            eventTime = childEvent,
+            childKey = child.key,
+        )
+    }
+
+    /**
+     * 通知栏里只剩下已经记过账的子通知，摘要却又被刷了一遍。
+     * 这种刷新不是新的一笔付款。
+     */
+    private fun isStaleGroupedReplay(sbn: StatusBarNotification, text: String): Boolean {
+        val notification = sbn.notification ?: return false
+        val grouped = notification.flags and Notification.FLAG_GROUP_SUMMARY != 0 ||
+            NotificationParser.looksLikeGroupedSummary(text)
+        if (!grouped || !isMonitoredPackage(sbn.packageName)) return false
+        val active = try {
+            activeNotifications ?: return false
+        } catch (e: Exception) {
+            Log.w(TAG, "activeNotifications unavailable", e)
+            return false
+        }
+        val children = active.filter {
+            it.packageName == sbn.packageName &&
+                it.key != sbn.key &&
+                (it.notification.flags and Notification.FLAG_GROUP_SUMMARY) == 0
+        }
+        val ledger = children.mapNotNull { child ->
+            val extracted = normalizedTextOf(child) ?: return@mapNotNull null
+            if (!NotificationParser.looksLikeLedgerChild(extracted.text)) return@mapNotNull null
+            child to extracted.text
+        }
+        if (ledger.isEmpty()) return false
+        val now = System.currentTimeMillis()
+        val summaryEvent = DedupHelper.stableEventTime(sbn.postTime, notification.`when`, now)
+        val hasFresh = ledger.any { (child, childText) ->
+            val fp = ProcessedNoticeStore.fingerprint(child.key, childText)
+            if (ProcessedNoticeStore.isProcessed(applicationContext, fp)) return@any false
+            val childEvent = DedupHelper.stableEventTime(child.postTime, child.notification.`when`, now)
+            kotlin.math.abs(childEvent - summaryEvent) <= DedupHelper.CROSS_CHECKOUT_WINDOW_MS
+        }
+        if (hasFresh) return false
+        return ledger.any { (child, childText) ->
+            val fp = ProcessedNoticeStore.fingerprint(child.key, childText)
+            ProcessedNoticeStore.isProcessed(applicationContext, fp) &&
+                sameNoticeBody(text, childText)
+        }
+    }
+
+    private fun sameNoticeBody(a: String, b: String): Boolean {
+        if (a.isBlank() || b.isBlank()) return false
+        if (a == b) return true
+        val short = if (a.length <= b.length) a else b
+        val long = if (a.length <= b.length) b else a
+        return short.length >= 6 && long.contains(short)
+    }
 
     /**
      * 从同组 / 同包最近活跃通知中找出带真实账务金额的子通知。
      * 适用于微信/支付宝聚合、银行 App 折叠动账、云闪付/电商收银台等。
      *
      * 注意：部分机型上摘要与子通知的 groupKey 不一致，不能仅依赖同组匹配。
+     * 已入账或早于本条摘要数分钟的子通知一律不用，避免把早上的金额抄进下午的新通知。
      */
     private fun enrichPaymentTextFromGroup(sbn: StatusBarNotification): EnrichedPayText? {
         val active = try {
@@ -502,29 +692,20 @@ class PaymentNotificationListener : NotificationListenerService() {
             .filter { it.packageName == sbn.packageName }
             .filter { it.key != sbn.key }
             .filter { (it.notification.flags and Notification.FLAG_GROUP_SUMMARY) == 0 }
-            .sortedByDescending { it.postTime }
+            .sortedByDescending { child ->
+                DedupHelper.stableEventTime(
+                    child.postTime,
+                    child.notification.`when`,
+                    System.currentTimeMillis()
+                )
+            }
             .toList()
 
         fun pickFrom(list: List<StatusBarNotification>, tag: String): EnrichedPayText? {
             for (child in list) {
-                val extras = child.notification?.extras ?: continue
-                val (t, c) = extractNotificationText(extras)
-                // ticker 有时比 extras 更完整
-                val ticker = child.notification?.tickerText?.toString()?.trim().orEmpty()
-                val combined = NotificationParser.normalizeNotificationText(
-                    listOf(t, c, ticker).filter { it.isNotBlank() }.joinToString(" ")
-                )
-                if (NotificationParser.looksLikeLedgerChild(combined)) {
-                    Log.d(
-                        TAG,
-                        "Found ledger child ($tag): pkg=${child.packageName} key=${child.key} text=$combined"
-                    )
-                    return EnrichedPayText(
-                        t.ifBlank { ticker },
-                        c.ifBlank { ticker },
-                        child.postTime
-                    )
-                }
+                val accepted = acceptLedgerChild(child, sbn) ?: continue
+                Log.d(TAG, "Found ledger child ($tag): pkg=${child.packageName} key=${child.key}")
+                return accepted
             }
             return null
         }
@@ -535,9 +716,12 @@ class PaymentNotificationListener : NotificationListenerService() {
         }
         pickFrom(sameGroup, "sameGroup")?.let { return it }
 
-        // 回退：同包近 5 分钟内任意带账务金额的子通知（覆盖 groupKey 不一致）
-        val recent = children.filter {
-            kotlin.math.abs(sbn.postTime - it.postTime) <= 300_000L
+        // 回退：同包、交易时间接近的子通知（覆盖 groupKey 不一致）。过旧的不采用。
+        val now = System.currentTimeMillis()
+        val summaryEvent = DedupHelper.stableEventTime(sbn.postTime, sbn.notification.`when`, now)
+        val recent = children.filter { child ->
+            val childEvent = DedupHelper.stableEventTime(child.postTime, child.notification.`when`, now)
+            kotlin.math.abs(childEvent - summaryEvent) <= DedupHelper.CROSS_CHECKOUT_WINDOW_MS
         }
         pickFrom(recent, "recentSamePkg")?.let { return it }
 

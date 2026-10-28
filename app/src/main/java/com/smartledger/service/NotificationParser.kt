@@ -17,7 +17,12 @@ data class ParsedPayment(
     /** 需确认时的简短原因（展示用） */
     val uncertainReason: String? = null,
     /** 通知原文片段，确认页展示 */
-    val rawSnippet: String? = null
+    val rawSnippet: String? = null,
+    /**
+     * 银行/短信正文里点明的收银台：微信、支付宝、京东、抖音、云闪付。
+     * 收银台通知自身通常为 null，或与 [paymentMethod] 相同。
+     */
+    val channelHint: String? = null,
 )
 
 private data class AmountHit(
@@ -533,7 +538,10 @@ object NotificationParser {
             packageName.contains("abcpocket") || packageName.contains("abchina") || packageName.contains("bankabc") -> "农业银行"
             packageName.contains("cmb") -> "招商银行"
             packageName.contains("pingan") -> "平安银行"
-            packageName.contains("jd.jr") || packageName.contains("jingdong") -> "京东"
+            packageName.contains("jd.jr") || packageName.contains("jingdong") ||
+                packageName.contains("jdlite") -> "京东"
+            packageName.contains("taobao") -> "淘宝"
+            packageName.contains("tmall") -> "天猫"
             text.contains("微信") -> "微信"
             text.contains("支付宝") -> "支付宝"
             text.contains("云闪付") || text.contains("银联") -> "云闪付"
@@ -788,11 +796,16 @@ object NotificationParser {
         // 电商收银台默认商户
         if (merchant.isNullOrBlank() && isShoppingApp(packageName)) {
             merchant = when {
-                packageName.contains("jingdong") || packageName.contains("jd.") -> "京东"
+                packageName.contains("jingdong") || packageName.contains("jd.") ||
+                    packageName.contains("jdlite") -> "京东"
                 packageName.contains("tmall") -> "天猫"
                 packageName.contains("taobao") -> "淘宝"
                 else -> null
             }
+        }
+        // 「理财网银在线-平台商户」一类是支付通道，不是商户，留着会和收银台商户对不上
+        if (DedupHelper.isGenericMerchant(merchant)) {
+            merchant = null
         }
 
         // 退款时商户名标注
@@ -821,7 +834,8 @@ object NotificationParser {
             type = type,
             confidence = confidence,
             uncertainReason = reason,
-            rawSnippet = rawText.take(120)
+            rawSnippet = rawText.take(120),
+            channelHint = DedupHelper.inferChannelHint(rawText),
         )
     }
 

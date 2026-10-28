@@ -17,7 +17,8 @@ object PendingConfirmStore {
         val notificationKey: String?,
         val transactionTime: Long,
         val reason: String?,
-        val rawSnippet: String?
+        val rawSnippet: String?,
+        val channelHint: String? = null,
     )
 
     private val seq = AtomicLong(1)
@@ -31,7 +32,8 @@ object PendingConfirmStore {
         notificationKey: String?,
         transactionTime: Long,
         reason: String?,
-        rawSnippet: String?
+        rawSnippet: String?,
+        channelHint: String? = null,
     ): Long {
         val id = seq.getAndIncrement()
         map[id] = Pending(
@@ -43,7 +45,8 @@ object PendingConfirmStore {
             notificationKey = notificationKey,
             transactionTime = transactionTime,
             reason = reason,
-            rawSnippet = rawSnippet
+            rawSnippet = rawSnippet,
+            channelHint = channelHint,
         )
         // 防止堆积：最多保留 20 条
         if (map.size > 20) {
@@ -56,5 +59,32 @@ object PendingConfirmStore {
 
     fun remove(id: Long) {
         map.remove(id)
+    }
+
+    /** 同一笔付款的另一条通知还在等确认时，不要再弹一次。 */
+    fun findSimilar(
+        amountCents: Long,
+        type: String,
+        merchant: String?,
+        paymentMethod: String?,
+        transactionTime: Long,
+        channelHint: String?,
+    ): Pending? {
+        val incoming = DedupHelper.PaymentSignature(
+            amountCents, type, merchant, paymentMethod, transactionTime, channelHint
+        )
+        return map.values.firstOrNull { pending ->
+            DedupHelper.paymentsAreDuplicate(
+                DedupHelper.PaymentSignature(
+                    amountCents = com.smartledger.util.CurrencyUtil.toCents(pending.amount),
+                    type = pending.type,
+                    merchant = pending.merchant,
+                    paymentMethod = pending.paymentMethod,
+                    transactionTime = pending.transactionTime,
+                    channelHint = pending.channelHint,
+                ),
+                incoming
+            )
+        }
     }
 }

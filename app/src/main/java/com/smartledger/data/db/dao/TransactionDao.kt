@@ -25,6 +25,18 @@ interface TransactionDao {
     @Query("SELECT * FROM transactions WHERE notificationKey = :key LIMIT 1")
     suspend fun getByNotificationKey(key: String): Transaction?
 
+    /**
+     * 一条交易可能挂了多个通知指纹（收银台 + 银行卡），用逗号拼在 notificationKey 里。
+     * 指纹是十六进制，不含 LIKE 通配符。
+     */
+    @Query(
+        "SELECT * FROM transactions WHERE notificationKey = :key " +
+            "OR notificationKey LIKE :key || ',%' " +
+            "OR notificationKey LIKE '%,' || :key " +
+            "OR notificationKey LIKE '%,' || :key || ',%' LIMIT 1"
+    )
+    suspend fun findByNoticeKey(key: String): Transaction?
+
     @Query("SELECT * FROM transactions WHERE transactionTime BETWEEN :startTime AND :endTime ORDER BY transactionTime DESC")
     fun getByTimeRange(startTime: Long, endTime: Long): Flow<List<Transaction>>
 

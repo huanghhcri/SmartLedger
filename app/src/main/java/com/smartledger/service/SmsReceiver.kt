@@ -53,19 +53,32 @@ class SmsReceiver : BroadcastReceiver() {
         "到账", "收入", "转入", "存入", "退款", "收款"
     )
 
-    private val amountPatterns = listOf(
-        Regex("金额([\\d.]+)"),
-        Regex("人民币([\\d.]+)元"),
-        Regex("([\\d.]+)元"),
-        Regex("[￥¥]([\\d.]+)")
-    )
-
     private val merchantPatterns = listOf(
         Regex("账号(.+?)扣款"),
         Regex("账号(.+?)支出"),
         Regex("在(.+?)消费"),
         Regex("商户[：:]\\s*(.+?)(?:\\s|$)")
     )
+
+    /** 先去掉余额和卡号尾号，避免把余额或卡号当成交易金额。 */
+    private fun parseSmsAmount(body: String): Double? {
+        val masked = body
+            .replace(Regex("尾号\\d{4}"), "")
+            .replace(Regex("余额[^，。;；\\n]{0,16}"), "")
+        val patterns = listOf(
+            Regex("(?:支出|消费|扣款|转出|收入|存入|转入|退款)人民币\\s*([\\d.]+)\\s*元"),
+            Regex("人民币\\s*([\\d.]+)\\s*元"),
+            Regex("金额\\s*([\\d.]+)"),
+            Regex("[￥¥]\\s*([\\d.]+)"),
+            Regex("([\\d.]+)\\s*元"),
+        )
+        for (pattern in patterns) {
+            val raw = pattern.find(masked)?.groupValues?.getOrNull(1) ?: continue
+            val value = raw.toDoubleOrNull() ?: continue
+            if (value > 0 && value < 10_000_000) return value
+        }
+        return null
+    }
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
@@ -98,15 +111,7 @@ class SmsReceiver : BroadcastReceiver() {
         val isIncome = incomeKeywords.any { body.contains(it) }
         if (!isExpense && !isIncome) return
 
-        var amount: Double? = null
-        for (pattern in amountPatterns) {
-            val match = pattern.find(body)
-            if (match != null) {
-                amount = match.groupValues.lastOrNull { it.matches(Regex("[\\d.]+")) }?.toDoubleOrNull()
-                if (amount != null && amount > 0) break
-            }
-        }
-        if (amount == null || amount <= 0) return
+        val amount = parseSmsAmount(body) ?: return
 
         val bankName = identifyBank(body)
 
@@ -129,52 +134,74 @@ class SmsReceiver : BroadcastReceiver() {
 
         Log.d(TAG, "SMS parsed: amount=$amount, bank=$bankName, merchant=$merchant, type=$type")
 
+        val cleanMerchant = if (DedupHelper.isGenericMerchant(merchant)) null else merchant
+        val channelHint = DedupHelper.inferChannelHint(body)
+        val smsKey = ProcessedNoticeStore.fingerprint("sms", body)
+
         try {
             val db = AppDatabase.getInstance(context)
-            val amountCents = CurrencyUtil.toCents(amount)
-            val now = System.currentTimeMillis()
-            val duplicate = DedupHelper.findDuplicate(
-                db.transactionDao(),
-                amountCents,
-                type,
-                merchant,
-                bankName,
-                now
-            )
-            if (duplicate != null) {
-                Log.d(TAG, "SMS duplicate detected, skipping")
-                DedupHelper.mergeIfDuplicate(db.transactionDao(), duplicate, bankName, merchant)
-                return
-            }
-
-            var categoryId: Long? = null
-            try {
-                val categories = db.categoryDao().getAllOnce()
-                categoryId = SmartCategorizer.categorize(
-                    merchant = merchant,
-                    paymentMethod = bankName,
-                    note = null,
-                    categories = categories,
-                    type = type
+            DedupHelper.exclusive {
+                if (ProcessedNoticeStore.isProcessed(context, smsKey)) {
+                    Log.d(TAG, "SMS replay skipped")
+                    return@exclusive
+                }
+                val amountCents = CurrencyUtil.toCents(amount)
+                val now = System.currentTimeMillis()
+                val duplicate = DedupHelper.findDuplicate(
+                    db.transactionDao(),
+                    amountCents,
+                    type,
+                    cleanMerchant,
+                    bankName,
+                    now,
+                    channelHint,
                 )
-            } catch (e: Exception) {
-                Log.e(TAG, "SMS categorize failed", e)
-            }
+                if (duplicate != null) {
+                    Log.d(TAG, "SMS duplicate detected, merging")
+                    val categories = db.categoryDao().getAllOnce()
+                    DedupHelper.absorbDuplicate(
+                        db.transactionDao(),
+                        duplicate,
+                        bankName,
+                        cleanMerchant,
+                        now,
+                        listOf(smsKey),
+                        categories,
+                    )
+                    ProcessedNoticeStore.mark(context, smsKey)
+                    return@exclusive
+                }
 
-            val id = db.transactionDao().insert(
-                Transaction(
-                    amount = amount,
-                    type = type,
-                    categoryId = categoryId,
-                    merchant = merchant,
-                    paymentMethod = bankName,
-                    note = null,
-                    source = "sms",
-                    notificationKey = null,
-                    transactionTime = now
+                var categoryId: Long? = null
+                try {
+                    val categories = db.categoryDao().getAllOnce()
+                    categoryId = SmartCategorizer.categorize(
+                        merchant = cleanMerchant,
+                        paymentMethod = bankName,
+                        note = null,
+                        categories = categories,
+                        type = type
+                    )
+                } catch (e: Exception) {
+                    Log.e(TAG, "SMS categorize failed", e)
+                }
+
+                val id = db.transactionDao().insert(
+                    Transaction(
+                        amount = amount,
+                        type = type,
+                        categoryId = categoryId,
+                        merchant = cleanMerchant,
+                        paymentMethod = bankName,
+                        note = null,
+                        source = "sms",
+                        notificationKey = smsKey,
+                        transactionTime = now
+                    )
                 )
-            )
-            Log.d(TAG, "SMS transaction saved: id=$id")
+                ProcessedNoticeStore.mark(context, smsKey)
+                Log.d(TAG, "SMS transaction saved: id=$id")
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to save SMS transaction", e)
         }
