@@ -16,6 +16,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.compose.NavHost
@@ -218,7 +220,7 @@ fun MainApp() {
         }
     }
 
-    // ═══ 自动检查更新（启动后检查；失败可重试；「稍后再说」仅跳过当前版本）═══
+    // ═══ 自动检查更新：每次回到前台都查；有新版本就弹窗。「稍后再说」只安静 6 小时。═══
     var updateInfo by remember { mutableStateOf<com.smartledger.util.UpdateChecker.UpdateInfo?>(null) }
     var isDownloadingUpdate by remember { mutableStateOf(false) }
     var downloadProgress by remember { mutableStateOf(0) }
@@ -229,6 +231,10 @@ fun MainApp() {
         context.getSharedPreferences("smart_ledger", Context.MODE_PRIVATE)
             .edit()
             .putString("dismissed_update_version", info.versionName)
+            .putLong(
+                "update_snooze_until",
+                System.currentTimeMillis() + 6 * 60 * 60 * 1000L
+            )
             .apply()
         updateInfo = null
     }
@@ -276,32 +282,32 @@ fun MainApp() {
             }
         }
     }
-    LaunchedEffect(Unit) {
-        // 稍等首屏渲染，避免与权限引导抢弹窗
-        delay(1200)
-        val prefs = context.getSharedPreferences("smart_ledger", Context.MODE_PRIVATE)
-        val lastCheck = prefs.getLong("last_update_check", 0L)
-        val now = System.currentTimeMillis()
-        // 成功检查后 30 分钟内不重复请求；失败不写时间戳，下次启动可重试
-        if (now - lastCheck < 30 * 60 * 1000L) return@LaunchedEffect
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            delay(800)
+            val prefs = context.getSharedPreferences("smart_ledger", Context.MODE_PRIVATE)
+            val now = System.currentTimeMillis()
+            val lastCheck = prefs.getLong("last_update_check", 0L)
+            if (now - lastCheck < 10 * 60 * 1000L) return@repeatOnLifecycle
 
-        when (val result = com.smartledger.util.UpdateChecker.checkUpdate(context)) {
-            is com.smartledger.util.UpdateChecker.CheckResult.HasUpdate -> {
-                prefs.edit().putLong("last_update_check", now).apply()
-                val dismissed = prefs.getString("dismissed_update_version", null)
-                if (dismissed != result.info.versionName) {
-                    updateInfo = result.info
+            when (val result = com.smartledger.util.UpdateChecker.checkUpdate(context)) {
+                is com.smartledger.util.UpdateChecker.CheckResult.HasUpdate -> {
+                    prefs.edit().putLong("last_update_check", now).apply()
+                    val dismissed = prefs.getString("dismissed_update_version", null)
+                    val snoozeUntil = prefs.getLong("update_snooze_until", 0L)
+                    val snoozed = dismissed == result.info.versionName && now < snoozeUntil
+                    if (!snoozed) updateInfo = result.info
                 }
-            }
-            is com.smartledger.util.UpdateChecker.CheckResult.UpToDate -> {
-                prefs.edit()
-                    .putLong("last_update_check", now)
-                    .remove("dismissed_update_version")
-                    .apply()
-            }
-            is com.smartledger.util.UpdateChecker.CheckResult.Failed -> {
-                // 不更新 last_update_check，下次冷启动继续试
-                Log.w("SmartLedger", "自动检查更新失败: ${result.message}")
+                is com.smartledger.util.UpdateChecker.CheckResult.UpToDate -> {
+                    prefs.edit()
+                        .putLong("last_update_check", now)
+                        .remove("dismissed_update_version")
+                        .remove("update_snooze_until")
+                        .apply()
+                }
+                is com.smartledger.util.UpdateChecker.CheckResult.Failed -> {
+                    Log.w("SmartLedger", "自动检查更新失败: ${result.message}")
+                }
             }
         }
     }

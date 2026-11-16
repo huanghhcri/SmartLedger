@@ -113,6 +113,8 @@ object DedupHelper {
         // 银行短信可以晚一点，但两分钟后的下一单不能再吸进来。
         if (existing.alreadyPaired) {
             if (hintsConflict(existing, incoming)) return diff < CONFLICT_WINDOW_MS
+            // 退款常会再推一条「到账」，金额相同就并进已有的那笔
+            if (isRefundCluster(existing, incoming)) return diff < CROSS_CHECKOUT_WINDOW_MS
             val limit = if (incoming.origin == ORIGIN_BANK) {
                 SAME_CHANNEL_WINDOW_MS
             } else {
@@ -132,6 +134,10 @@ object DedupHelper {
         val sameOrigin = existing.origin != null && existing.origin == incoming.origin
 
         if (hintsConflict(existing, incoming)) return CONFLICT_WINDOW_MS
+        // 京东/微信/支付宝退款常连发「退款成功」和「到账」，金额相同的合成一笔
+        if ((sameOrigin || sameChannel) && isRefundCluster(existing, incoming)) {
+            return CROSS_CHECKOUT_WINDOW_MS
+        }
         // 两条都来自微信，或两条都来自银行：只合并十几秒内的重复推送，10:49 的下一单单独记
         if (sameOrigin) return SAME_CHANNEL_NO_MERCHANT_MS
         // 微信 App 和银行 App，即使支付方式都被写成「工商银行」也是同一笔的两侧
@@ -385,6 +391,19 @@ object DedupHelper {
             (a.origin == ORIGIN_BANK && b.origin == ORIGIN_WALLET)
     }
 
+    /** 同一平台的退款通知：商户都是「京东/退款」或互相包含，且不是两笔红包。 */
+    private fun isRefundCluster(a: PaymentSignature, b: PaymentSignature): Boolean {
+        if (a.type != "income" || b.type != "income") return false
+        if (a.merchant == "红包" || b.merchant == "红包") return false
+        if (merchantMatch(a.merchant, b.merchant)) return true
+        return isRefundPlaceholder(a.merchant) || isRefundPlaceholder(b.merchant)
+    }
+
+    private fun isRefundPlaceholder(name: String?): Boolean {
+        if (name.isNullOrBlank()) return true
+        return name in REFUND_PLACEHOLDERS
+    }
+
     private fun isStickyToken(token: String): Boolean {
         return token.startsWith(HINT_PREFIX) || token == WALLET_ORIGIN_TOKEN || token == BANK_ORIGIN_TOKEN
     }
@@ -465,6 +484,10 @@ object DedupHelper {
 
     private val WALLET_HINTS = WALLET_METHODS
 
+    private val REFUND_PLACEHOLDERS = setOf(
+        "退款", "京东", "淘宝", "天猫", "抖音", "微信", "支付宝", "云闪付"
+    )
+
     private const val HINT_PREFIX = "ch:"
     const val ORIGIN_WALLET = "wallet"
     const val ORIGIN_BANK = "bank"
@@ -483,3 +506,19 @@ object DedupHelper {
         "抖音" to 2,
     )
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

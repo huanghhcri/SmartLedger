@@ -356,8 +356,10 @@ object NotificationParser {
         }
         // 退款入账（排除提现提醒）
         if ((text.contains("退款成功") || text.contains("退款到账") ||
+                text.contains("已入账") || text.contains("入账成功") || text.contains("已到账") ||
                 (text.contains("退款") && (text.contains("元") || text.contains("¥") || text.contains("￥")))) &&
-            !text.contains("提现") && !text.contains("尚未处理")
+            !text.contains("提现") && !text.contains("尚未处理") &&
+            !text.contains("优惠") && !text.contains("积分") && !text.contains("打款")
         ) {
             return true
         }

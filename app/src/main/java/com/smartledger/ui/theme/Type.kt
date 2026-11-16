@@ -17,79 +17,62 @@ val Typography = Typography(
         fontWeight = FontWeight.Bold,
         fontSize = 36.sp,
         lineHeight = 44.sp,
-        letterSpacing = (-0.5).sp,
-        color = Foreground
+        letterSpacing = (-0.5).sp
     ),
-    // 中标题：页面标题
     displayMedium = TextStyle(
         fontWeight = FontWeight.SemiBold,
         fontSize = 28.sp,
         lineHeight = 36.sp,
-        letterSpacing = (-0.3).sp,
-        color = Foreground
+        letterSpacing = (-0.3).sp
     ),
-    // 小标题：区域标题
     headlineLarge = TextStyle(
         fontWeight = FontWeight.SemiBold,
         fontSize = 20.sp,
-        lineHeight = 28.sp,
-        color = Foreground
+        lineHeight = 28.sp
     ),
     headlineMedium = TextStyle(
         fontWeight = FontWeight.SemiBold,
         fontSize = 18.sp,
-        lineHeight = 24.sp,
-        color = Foreground
+        lineHeight = 24.sp
     ),
-    // 副标题
     titleLarge = TextStyle(
         fontWeight = FontWeight.Medium,
         fontSize = 16.sp,
-        lineHeight = 22.sp,
-        color = Foreground
+        lineHeight = 22.sp
     ),
     titleMedium = TextStyle(
         fontWeight = FontWeight.Medium,
         fontSize = 14.sp,
-        lineHeight = 20.sp,
-        color = Foreground
+        lineHeight = 20.sp
     ),
-    // 正文
     bodyLarge = TextStyle(
         fontWeight = FontWeight.Normal,
         fontSize = 16.sp,
-        lineHeight = 24.sp,
-        color = Foreground
+        lineHeight = 24.sp
     ),
     bodyMedium = TextStyle(
         fontWeight = FontWeight.Normal,
         fontSize = 14.sp,
-        lineHeight = 20.sp,
-        color = Foreground
+        lineHeight = 20.sp
     ),
     bodySmall = TextStyle(
         fontWeight = FontWeight.Normal,
         fontSize = 12.sp,
-        lineHeight = 16.sp,
-        color = ForegroundSecondary
+        lineHeight = 16.sp
     ),
-    // 标签
     labelLarge = TextStyle(
         fontWeight = FontWeight.Medium,
         fontSize = 14.sp,
-        lineHeight = 20.sp,
-        color = Foreground
+        lineHeight = 20.sp
     ),
     labelMedium = TextStyle(
         fontWeight = FontWeight.Medium,
         fontSize = 12.sp,
-        lineHeight = 16.sp,
-        color = ForegroundSecondary
+        lineHeight = 16.sp
     ),
     labelSmall = TextStyle(
         fontWeight = FontWeight.Normal,
         fontSize = 11.sp,
-        lineHeight = 14.sp,
-        color = ForegroundSecondary
+        lineHeight = 14.sp
     )
 )

@@ -144,6 +144,70 @@ class DedupHelperTest {
     }
 
     @Test
+    fun jdRefundNoticesWithinOneMinuteMerge() {
+        val cents = CurrencyUtil.toCents(5.80)
+        val first = pay(
+            cents, "京东", "京东", base,
+            type = "income", origin = DedupHelper.ORIGIN_WALLET
+        )
+        val second = pay(
+            cents, "京东", "京东", base + 40_000,
+            type = "income", origin = DedupHelper.ORIGIN_WALLET
+        )
+        assertTrue(DedupHelper.paymentsAreDuplicate(first, second))
+    }
+
+    @Test
+    fun differentRefundAmountsStaySeparate() {
+        val first = pay(
+            CurrencyUtil.toCents(5.80), "京东", "京东", base,
+            type = "income", origin = DedupHelper.ORIGIN_WALLET
+        )
+        val second = pay(
+            CurrencyUtil.toCents(4.76), "京东", "京东", base + 60_000,
+            type = "income", origin = DedupHelper.ORIGIN_WALLET
+        )
+        assertFalse(DedupHelper.paymentsAreDuplicate(first, second))
+    }
+
+    @Test
+    fun wechatAndAlipayRefundsAlsoMerge() {
+        val cents = CurrencyUtil.toCents(12.0)
+        val wechat = pay(
+            cents, "微信", "退款", base,
+            type = "income", origin = DedupHelper.ORIGIN_WALLET
+        )
+        val wechatAgain = pay(
+            cents, "微信", "退款", base + 90_000,
+            type = "income", origin = DedupHelper.ORIGIN_WALLET
+        )
+        val alipay = pay(
+            cents, "支付宝", "退款", base,
+            type = "income", origin = DedupHelper.ORIGIN_WALLET
+        )
+        val alipayAgain = pay(
+            cents, "支付宝", "淘宝", base + 90_000,
+            type = "income", origin = DedupHelper.ORIGIN_WALLET
+        )
+        assertTrue(DedupHelper.paymentsAreDuplicate(wechat, wechatAgain))
+        assertTrue(DedupHelper.paymentsAreDuplicate(alipay, alipayAgain))
+    }
+
+    @Test
+    fun twoRedPacketsStaySeparate() {
+        val cents = CurrencyUtil.toCents(5.80)
+        val first = pay(
+            cents, "微信", "红包", base,
+            type = "income", origin = DedupHelper.ORIGIN_WALLET
+        )
+        val second = pay(
+            cents, "微信", "红包", base + 40_000,
+            type = "income", origin = DedupHelper.ORIGIN_WALLET
+        )
+        assertFalse(DedupHelper.paymentsAreDuplicate(first, second))
+    }
+
+    @Test
     fun twoRealBankChargesWithoutWalletHintStaySeparate() {
         val cents = CurrencyUtil.toCents(8.50)
         val first = pay(cents, "工商银行", "便利店", base)

@@ -130,7 +130,9 @@ fun RecordScreen(
                         unfocusedBorderColor = Color.Transparent,
                         cursorColor = SmartLedgerColors.accent
                     ),
-                    textStyle = MaterialTheme.typography.bodyMedium
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                        color = SmartLedgerColors.fg
+                    )
                 )
             }
 
@@ -165,7 +167,9 @@ fun RecordScreen(
                         unfocusedBorderColor = Color.Transparent,
                         cursorColor = SmartLedgerColors.accent
                     ),
-                    textStyle = MaterialTheme.typography.bodyMedium
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                        color = SmartLedgerColors.fg
+                    )
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Icon(
