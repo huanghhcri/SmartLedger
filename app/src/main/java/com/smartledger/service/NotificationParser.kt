@@ -61,6 +61,9 @@ object NotificationParser {
     // ═══════════════════════════════════════════════════════
     // 微信支付
     // ═══════════════════════════════════════════════════════
+    private val exactWalletPaymentSuccess =
+        Regex("^(?:(?:微信支付|支付宝)[：:]?\\s+)?支付成功[：:]?\\s+$AMOUNT\\s*元[。.!！]?$")
+
     private val wechatExpensePatterns = listOf(
         Regex("付款[￥¥]([\\d.]+)"),
         Regex("向(.+?)付款[￥¥]([\\d.]+)"),
@@ -854,8 +857,8 @@ object NotificationParser {
     // ═══════════════════════════════════════════════════════
     private fun getExpensePatterns(paymentMethod: String, packageName: String): List<Regex> {
         return when {
-            packageName.contains("tencent.mm") -> wechatExpensePatterns
-            packageName.contains("AlipayGphone") -> alipayExpensePatterns
+            packageName.contains("tencent.mm") -> wechatExpensePatterns + exactWalletPaymentSuccess
+            packageName.contains("AlipayGphone") -> alipayExpensePatterns + exactWalletPaymentSuccess
             packageName.contains("unionpay") -> unionpayExpensePatterns
             packageName.contains("ugc.aweme") || packageName.contains("ugc.live") -> douyinExpensePatterns
             packageName.contains("jd.jr") || packageName.contains("jingdong") ||
