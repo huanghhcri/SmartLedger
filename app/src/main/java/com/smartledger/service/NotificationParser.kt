@@ -61,6 +61,9 @@ object NotificationParser {
     // ═══════════════════════════════════════════════════════
     // 微信支付
     // ═══════════════════════════════════════════════════════
+    private val exactWalletPaymentSuccess =
+        Regex("^(?:(?:微信支付|支付宝)[：:]?\\s+)?支付成功[：:]?\\s+$AMOUNT\\s*元[。.!！]?$")
+
     private val wechatExpensePatterns = listOf(
         Regex("付款[￥¥]([\\d.]+)"),
         Regex("向(.+?)付款[￥¥]([\\d.]+)"),
@@ -89,6 +92,22 @@ object NotificationParser {
     // ═══════════════════════════════════════════════════════
     // 支付宝
     // ═══════════════════════════════════════════════════════
+    // 交易提醒中的免密扣款金额。通知未明确写明成功时仍需要用户确认。
+    const val AUTO_DEBIT_CONFIRM_REASON = "免密扣款通知需确认"
+    private val alipayAutoDebitPattern = Regex(
+        "^交易提醒\\s+你在.{1,50}?有一笔${AMOUNT}元的免密.{0,20}?扣款支付"
+    )
+    private val alipayAutoDebitExclusions = listOf(
+        "即将", "将于", "预计", "待扣款", "未扣款", "扣款失败", "支付失败",
+        "取消", "退款", "优惠券", "领券", "营销", "开通", "签约"
+    )
+
+    fun isAlipayAutoDebitNotice(text: String, packageName: String): Boolean {
+        return packageName == "com.eg.android.AlipayGphone" &&
+            alipayAutoDebitPattern.containsMatchIn(text) &&
+            alipayAutoDebitExclusions.none { text.contains(it) }
+    }
+
     private val alipayExpensePatterns = listOf(
         Regex("付款([\\d.]+)元"),
         Regex("成功付款([\\d.]+)"),
@@ -716,13 +735,14 @@ object NotificationParser {
     // ═══════════════════════════════════════════════════════
     fun parse(title: String, content: String, packageName: String): ParsedPayment? {
         val rawText = normalizeNotificationText("$title $content")
+        val isAutoDebit = isAlipayAutoDebitNotice(rawText, packageName)
 
         if (isCreditProductPayment(rawText)) return null
-        if (isPromotionalOrNonPayment(rawText)) return null
+        if (!isAutoDebit && isPromotionalOrNonPayment(rawText)) return null
 
         // 电商 / 微信 / 支付宝 / 抖音：必须有明确支付确认，禁止「见元就记」
         if ((isShoppingApp(packageName) || isStrictChatPayApp(packageName)) &&
-            !hasStrongPaymentSignal(rawText)
+            !hasStrongPaymentSignal(rawText) && !isAutoDebit
         ) {
             return null
         }
@@ -785,7 +805,8 @@ object NotificationParser {
             amountPatterns = getExpensePatterns(paymentMethod, packageName)
         }
 
-        val amountHit = extractAmount(text, amountPatterns, rawText) ?: return null
+        val paymentPatterns = if (isAutoDebit) listOf(alipayAutoDebitPattern) else amountPatterns
+        val amountHit = extractAmount(text, paymentPatterns, rawText) ?: return null
         val amount = amountHit.value
 
         // 提取商户名（用原文，卡号遮罩不影响商户）
@@ -823,9 +844,11 @@ object NotificationParser {
             }
         }
 
-        val (confidence, reason) = assessConfidence(
-            rawText, amountHit.isClear, typeAmbiguous, type
-        )
+        val (confidence, reason) = if (isAutoDebit) {
+            ParseConfidence.UNCERTAIN to AUTO_DEBIT_CONFIRM_REASON
+        } else {
+            assessConfidence(rawText, amountHit.isClear, typeAmbiguous, type)
+        }
 
         // 生成去重key
         val notificationKey = "$packageName:${System.currentTimeMillis() / 10000}:$amount:$type"
@@ -854,8 +877,8 @@ object NotificationParser {
     // ═══════════════════════════════════════════════════════
     private fun getExpensePatterns(paymentMethod: String, packageName: String): List<Regex> {
         return when {
-            packageName.contains("tencent.mm") -> wechatExpensePatterns
-            packageName.contains("AlipayGphone") -> alipayExpensePatterns
+            packageName.contains("tencent.mm") -> wechatExpensePatterns + exactWalletPaymentSuccess
+            packageName.contains("AlipayGphone") -> alipayExpensePatterns + exactWalletPaymentSuccess
             packageName.contains("unionpay") -> unionpayExpensePatterns
             packageName.contains("ugc.aweme") || packageName.contains("ugc.live") -> douyinExpensePatterns
             packageName.contains("jd.jr") || packageName.contains("jingdong") ||

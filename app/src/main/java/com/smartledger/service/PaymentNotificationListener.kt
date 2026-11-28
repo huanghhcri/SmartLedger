@@ -186,10 +186,12 @@ class PaymentNotificationListener : NotificationListenerService() {
             return
         }
 
+        val isAutoDebit = NotificationParser.isAlipayAutoDebitNotice(text, packageName)
+
         // 聚合摘要：仅监控渠道且补全/原文已像真实账务时才解析，其它 App 的摘要一律跳过
         if (isGroupSummary) {
             val looksLikePay = NotificationParser.looksLikeLedgerChild(text) ||
-                text.contains("已支付") || text.contains("付款") || text.contains("动账")
+                text.contains("已支付") || text.contains("付款") || text.contains("动账") || isAutoDebit
             if (!isMonitoredEarly || !looksLikePay) {
                 Log.d(TAG, "Skip group summary: pkg=$packageName text=$text")
                 return
@@ -210,7 +212,7 @@ class PaymentNotificationListener : NotificationListenerService() {
         }
 
         // 营销 / 额度 / 物流 / 提现提醒等
-        if (NotificationParser.isPromotionalOrNonPayment(text)) {
+        if (!isAutoDebit && NotificationParser.isPromotionalOrNonPayment(text)) {
             Log.d(TAG, "Promotional/non-payment, skip: $text")
             return
         }
@@ -241,7 +243,7 @@ class PaymentNotificationListener : NotificationListenerService() {
         // 银行类：必须有动账信号，禁止营销/余额/还款提醒误记
         if (isBankRelated &&
             !NotificationParser.hasBankLedgerSignal(text) &&
-            !NotificationParser.hasStrongPaymentSignal(text)
+            !NotificationParser.hasStrongPaymentSignal(text) && !isAutoDebit
         ) {
             Log.d(TAG, "Bank-related without ledger signal, skip: $text")
             return
@@ -259,7 +261,7 @@ class PaymentNotificationListener : NotificationListenerService() {
             packageName.contains("ugc.live")
 
         // 微信/支付宝/抖音/电商：无明确支付确认时直接跳过（防企业号「每天5元干饭」）
-        if ((isShopping || isChatPay) && !NotificationParser.hasStrongPaymentSignal(text)) {
+        if ((isShopping || isChatPay) && !NotificationParser.hasStrongPaymentSignal(text) && !isAutoDebit) {
             Log.d(TAG, "Chat/shopping without pay confirm, skip: $text")
             return
         }
@@ -422,6 +424,7 @@ class PaymentNotificationListener : NotificationListenerService() {
 
     /** 设置：模糊需确认（默认开）；或全部自动记账都确认 */
     private fun shouldAskConfirm(parsed: ParsedPayment): Boolean {
+        if (parsed.uncertainReason == NotificationParser.AUTO_DEBIT_CONFIRM_REASON) return true
         val prefs = getSharedPreferences("smart_ledger", MODE_PRIVATE)
         if (prefs.getBoolean("confirm_all_auto", false)) return true
         if (!prefs.getBoolean("confirm_uncertain", true)) return false
